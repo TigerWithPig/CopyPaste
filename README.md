@@ -6,12 +6,6 @@ CopyPaste is a lightweight native macOS clipboard manager. It stays in the menu 
 
 CopyPaste is built with Objective-C and AppKit. It does not depend on Electron, SwiftUI, or third-party packages.
 
-## Screenshots
-
-![CopyPaste main window](docs/images/screenshot-main.png)
-
-![CopyPaste settings](docs/images/screenshot-settings.png)
-
 ## Features
 
 - Menu bar clipboard history.

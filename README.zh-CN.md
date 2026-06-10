@@ -6,12 +6,6 @@ CopyPaste 是一个轻量的原生 macOS 剪贴板管理器。它常驻菜单栏
 
 CopyPaste 使用 Objective-C 和 AppKit 构建，不依赖 Electron、SwiftUI 或第三方包。
 
-## 截图
-
-![CopyPaste 主窗口](docs/images/screenshot-main.png)
-
-![CopyPaste 设置](docs/images/screenshot-settings.png)
-
 ## 功能
 
 - 菜单栏剪贴板历史。
