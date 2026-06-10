@@ -2960,6 +2960,9 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 @property (nonatomic, strong) NSSegmentedControl *modernSectionControl;
 @property (nonatomic, strong) NSStackView *modernContentStack;
 @property (nonatomic, strong) NSArray<CSActionButton *> *modernNavigationButtons;
+@property (nonatomic, strong) NSView *settingsContentBackgroundView;
+@property (nonatomic, strong) NSView *modernSidebarView;
+@property (nonatomic, strong) NSView *modernPanelSurfaceView;
 @property (nonatomic, assign) NSInteger modernSelectedSection;
 @property (nonatomic, strong) NSTextField *maxItemsLabel;
 @property (nonatomic, strong) NSSegmentedControl *appearanceControl;
@@ -2993,9 +2996,37 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     NSView *view = NSView.new;
     view.wantsLayer = YES;
     view.layer.cornerRadius = 12;
-    view.layer.backgroundColor = [NSColor.controlBackgroundColor colorWithAlphaComponent:0.64].CGColor;
     view.translatesAutoresizingMaskIntoConstraints = NO;
     return view;
+}
+
+- (BOOL)settingsUseDarkAppearance {
+    NSString *match = [self.window.effectiveAppearance bestMatchFromAppearancesWithNames:@[
+        NSAppearanceNameAqua,
+        NSAppearanceNameDarkAqua
+    ]];
+    return [match isEqualToString:NSAppearanceNameDarkAqua];
+}
+
+- (NSColor *)settingsWindowBackgroundColor {
+    return [self settingsUseDarkAppearance] ? CSColorFromHex(@"1F2023", 1.0) : CSColorFromHex(@"F5F6F8", 1.0);
+}
+
+- (NSColor *)settingsSurfaceColor {
+    return [self settingsUseDarkAppearance] ? CSColorFromHex(@"2A2C30", 1.0) : CSColorFromHex(@"FFFFFF", 1.0);
+}
+
+- (NSColor *)settingsSelectedNavigationColor {
+    return [self settingsUseDarkAppearance] ? [NSColor.controlAccentColor colorWithAlphaComponent:0.26] : [NSColor.controlAccentColor colorWithAlphaComponent:0.14];
+}
+
+- (void)applySettingsSurfaceColors {
+    self.window.backgroundColor = [self settingsWindowBackgroundColor];
+    self.settingsContentBackgroundView.wantsLayer = YES;
+    self.settingsContentBackgroundView.layer.backgroundColor = [self settingsWindowBackgroundColor].CGColor;
+    self.modernSidebarView.layer.backgroundColor = [self settingsSurfaceColor].CGColor;
+    self.modernPanelSurfaceView.layer.backgroundColor = [self settingsSurfaceColor].CGColor;
+    [self refreshModernNavigationSelection];
 }
 
 - (NSTextField *)settingsTitleLabel:(NSString *)text {
@@ -3058,7 +3089,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
                                                               attributes:@{NSForegroundColorAttributeName: textColor,
                                                                            NSFontAttributeName: font}];
     button.contentTintColor = textColor;
-    button.layer.backgroundColor = (selected ? [NSColor.controlAccentColor colorWithAlphaComponent:0.18] : NSColor.clearColor).CGColor;
+    button.layer.backgroundColor = (selected ? [self settingsSelectedNavigationColor] : NSColor.clearColor).CGColor;
 }
 
 - (void)refreshModernNavigationSelection {
@@ -3100,6 +3131,8 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorTransient;
 
     NSView *content = NSView.new;
+    self.settingsContentBackgroundView = content;
+    content.wantsLayer = YES;
     self.window.contentView = content;
 
     NSStackView *root = NSStackView.new;
@@ -3121,7 +3154,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     sidebar.edgeInsets = NSEdgeInsetsMake(18, 14, 18, 14);
     sidebar.wantsLayer = YES;
     sidebar.layer.cornerRadius = 12;
-    sidebar.layer.backgroundColor = [NSColor.controlBackgroundColor colorWithAlphaComponent:0.64].CGColor;
+    self.modernSidebarView = sidebar;
     [root addArrangedSubview:sidebar];
     [sidebar.widthAnchor constraintEqualToConstant:168].active = YES;
 
@@ -3155,6 +3188,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     [sidebar addArrangedSubview:sidebarFill];
 
     NSView *panel = [self modernPanelView];
+    self.modernPanelSurfaceView = panel;
     [root addArrangedSubview:panel];
     [panel.widthAnchor constraintGreaterThanOrEqualToConstant:440].active = YES;
 
@@ -3173,6 +3207,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     ]];
 
     [self showModernSection:0];
+    [self applySettingsSurfaceColors];
 }
 
 - (void)showModernSection:(NSInteger)section {
@@ -3332,6 +3367,8 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorTransient;
 
     NSView *content = NSView.new;
+    self.settingsContentBackgroundView = content;
+    content.wantsLayer = YES;
     self.window.contentView = content;
     NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     scrollView.drawsBackground = NO;
@@ -3637,6 +3674,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         }
         return;
     }
+    [self applySettingsSurfaceColors];
     self.interfaceStyleControl.selectedSegment = [style isEqualToString:CSInterfaceStyleModern] ? 1 : 0;
     [self refreshModernNavigationSelection];
     self.maxItemsLabel.stringValue = [NSString stringWithFormat:@"%@ 条", self.store.preferences[@"maxItems"]];
