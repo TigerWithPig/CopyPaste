@@ -60,6 +60,7 @@ static NSString *CSKindSymbol(NSString *kind) {
 }
 
 static NSString *CSRelativeDate(NSNumber *timestamp);
+static NSString *CSDetailMetricForItem(NSDictionary *item);
 
 static NSString *CSSHA256(NSString *value) {
     NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding] ?: NSData.data;
@@ -110,6 +111,28 @@ static NSString *CSCardSummaryForItem(NSDictionary *item) {
         return parent.length > 0 ? CSTruncate(parent, 90) : @"文件路径";
     }
     return CSTruncate(CSCondense(item[@"body"] ?: @""), 160);
+}
+
+static NSString *CSModernSecondaryTextForItem(NSDictionary *item) {
+    NSString *kind = item[@"kind"];
+    if ([kind isEqualToString:CSKindImage]) {
+        return CSDetailMetricForItem(item);
+    }
+    NSString *summary = CSCardSummaryForItem(item);
+    NSString *title = CSDisplayTitleForItem(item);
+    if (summary.length == 0) {
+        return @"";
+    }
+    if ([summary isEqualToString:title]) {
+        return @"";
+    }
+    if ([summary hasPrefix:title]) {
+        NSString *remaining = CSTrim([summary substringFromIndex:title.length]);
+        if (remaining.length > 0) {
+            return remaining;
+        }
+    }
+    return summary;
 }
 
 static NSString *CSSourceAndDateForItem(NSDictionary *item) {
@@ -1824,10 +1847,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     [self.searchField setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [bar addArrangedSubview:self.searchField];
 
-    self.kindFilterStack = NSStackView.new;
-    self.kindFilterStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    self.kindFilterStack.spacing = 7;
-    [bar addArrangedSubview:self.kindFilterStack];
+    self.kindFilterStack = nil;
 
     __block CSActionButton *helpButton = nil;
     helpButton = [CSActionButton buttonWithTitle:@"" symbol:@"questionmark.circle" handler:^{
@@ -2601,38 +2621,53 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [weakSelf pasteItems:@[item] plainText:shiftPressed];
     };
 
+    NSString *kind = item[@"kind"];
+    BOOL showsThumbnail = [kind isEqualToString:CSKindImage];
+    CGFloat trailingReserve = showsThumbnail ? 90.0 : ([item[@"pinned"] boolValue] ? 42.0 : 20.0);
+    CGFloat textWidth = MAX(180.0, frame.size.width - 44.0 - trailingReserve);
+
     NSImageView *symbol = [[NSImageView alloc] initWithFrame:NSMakeRect(16, 50, 18, 18)];
-    symbol.image = [NSImage imageWithSystemSymbolName:CSKindSymbol(item[@"kind"]) accessibilityDescription:CSKindTitle(item[@"kind"])];
+    symbol.image = [NSImage imageWithSystemSymbolName:CSKindSymbol(kind) accessibilityDescription:CSKindTitle(kind)];
     symbol.contentTintColor = selected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor;
     [card addSubview:symbol];
 
     NSTextField *title = CSLabel(CSDisplayTitleForItem(item), [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor);
-    title.frame = NSMakeRect(44, 48, frame.size.width - 132, 22);
+    title.frame = NSMakeRect(44, 48, textWidth, 22);
     title.lineBreakMode = NSLineBreakByTruncatingTail;
     [card addSubview:title];
 
-    NSString *bodyText = CSCardSummaryForItem(item);
-    NSTextField *body = CSLabel(bodyText.length > 0 ? bodyText : CSKindTitle(item[@"kind"]), [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
-    body.frame = NSMakeRect(44, 28, frame.size.width - 96, 18);
-    body.lineBreakMode = NSLineBreakByTruncatingTail;
-    [card addSubview:body];
+    NSString *bodyText = CSModernSecondaryTextForItem(item);
+    if (bodyText.length > 0) {
+        NSTextField *body = CSLabel(bodyText, [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
+        body.frame = NSMakeRect(44, 28, textWidth, 18);
+        body.lineBreakMode = NSLineBreakByTruncatingTail;
+        [card addSubview:body];
+    }
 
-    NSString *meta = [NSString stringWithFormat:@"%@ · %@", CSKindTitle(item[@"kind"]), CSSourceAndDateForItem(item)];
+    NSString *meta = [NSString stringWithFormat:@"%@ · %@", CSKindTitle(kind), CSSourceAndDateForItem(item)];
     NSTextField *source = CSLabel(meta, [NSFont systemFontOfSize:11], NSColor.tertiaryLabelColor);
-    source.frame = NSMakeRect(44, 10, frame.size.width - 120, 16);
+    source.frame = NSMakeRect(44, bodyText.length > 0 ? 10 : 26, textWidth, 16);
+    source.lineBreakMode = NSLineBreakByTruncatingTail;
     [card addSubview:source];
 
+    if (showsThumbnail) {
+        CGFloat thumbnailSize = 54.0;
+        NSView *thumbnail = [self previewViewForItem:item frame:NSMakeRect(frame.size.width - thumbnailSize - 18.0, 15.0, thumbnailSize, thumbnailSize) compact:YES];
+        thumbnail.wantsLayer = YES;
+        thumbnail.layer.cornerRadius = 9;
+        thumbnail.layer.masksToBounds = YES;
+        thumbnail.layer.borderWidth = 1;
+        thumbnail.layer.borderColor = [NSColor.separatorColor colorWithAlphaComponent:0.42].CGColor;
+        [card addSubview:thumbnail];
+    }
+
     if ([item[@"pinned"] boolValue]) {
-        NSImageView *pin = [[NSImageView alloc] initWithFrame:NSMakeRect(frame.size.width - 34, 52, 16, 16)];
+        CGFloat pinX = showsThumbnail ? frame.size.width - 30.0 : frame.size.width - 34.0;
+        NSImageView *pin = [[NSImageView alloc] initWithFrame:NSMakeRect(pinX, 52, 16, 16)];
         pin.image = [NSImage imageWithSystemSymbolName:@"pin.fill" accessibilityDescription:@"Pinned"];
         pin.contentTintColor = NSColor.systemOrangeColor;
         [card addSubview:pin];
     }
-
-    NSTextField *app = CSLabel((item[@"sourceAppName"] ?: @""), [NSFont systemFontOfSize:10], NSColor.tertiaryLabelColor);
-    app.alignment = NSTextAlignmentRight;
-    app.frame = NSMakeRect(frame.size.width - 118, 10, 98, 16);
-    [card addSubview:app];
     return card;
 }
 
