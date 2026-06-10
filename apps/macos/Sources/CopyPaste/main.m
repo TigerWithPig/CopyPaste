@@ -20,7 +20,7 @@ static NSString * const CSPanelPositionModeInput = @"input";
 static NSString * const CSInterfaceStyleClassic = @"classic";
 static NSString * const CSInterfaceStyleModern = @"modern";
 static UInt32 const CSHotKeySignature = 'CPST';
-static CGFloat const CSClassicPanelMaximumHeight = 520.0;
+static CGFloat const CSClassicPanelMaximumHeight = 390.0;
 
 static NSString *CSUUID(void) {
     return NSUUID.UUID.UUIDString;
@@ -1541,7 +1541,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.panel.opaque = NO;
     self.panel.backgroundColor = NSColor.clearColor;
     self.panel.hasShadow = YES;
-    self.panel.minSize = modern ? NSMakeSize(980, 540) : NSMakeSize(820, 430);
+    self.panel.minSize = modern ? NSMakeSize(980, 540) : NSMakeSize(820, 360);
     self.panel.delegate = self;
     [[self.panel standardWindowButton:NSWindowCloseButton] setHidden:YES];
     [[self.panel standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
@@ -1613,7 +1613,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     [body setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
     [root addArrangedSubview:body];
     [body.bottomAnchor constraintEqualToAnchor:root.bottomAnchor].active = YES;
-    NSLayoutConstraint *bodyMinHeight = [body.heightAnchor constraintGreaterThanOrEqualToConstant:340];
+    NSLayoutConstraint *bodyMinHeight = [body.heightAnchor constraintGreaterThanOrEqualToConstant:292];
     bodyMinHeight.priority = NSLayoutPriorityDefaultHigh;
     bodyMinHeight.active = YES;
 
@@ -1632,7 +1632,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.cardScrollView.hasHorizontalScroller = YES;
     self.cardScrollView.hasVerticalScroller = NO;
     self.cardScrollView.drawsBackground = NO;
-    self.cardsDocumentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 290)];
+    self.cardsDocumentView = [[CSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 290)];
     self.cardScrollView.documentView = self.cardsDocumentView;
     [body addArrangedSubview:self.cardScrollView];
 
@@ -2343,7 +2343,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     CGFloat x = 16;
     CGFloat y = 14;
     CGFloat width = 190;
-    CGFloat height = 246;
+    CGFloat height = MIN(MAX(self.cardScrollView.contentSize.height - 36, 246), 310);
     BOOL needsFullReload = NO;
     for (NSMutableDictionary *item in items) {
         CSCardView *card = cardsByID[item[@"id"]];
@@ -2359,11 +2359,12 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [self reloadCards];
     } else {
         CGFloat documentWidth = MAX(self.cardScrollView.contentSize.width, x + 16);
-        self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, height + 28);
+        CGFloat documentHeight = MAX(self.cardScrollView.contentSize.height, height + 28);
+        self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, documentHeight);
         if (items.count == 0) {
             NSTextField *empty = CSLabel(@"复制一些内容后会出现在这里", [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor);
             empty.alignment = NSTextAlignmentCenter;
-            empty.frame = NSMakeRect(20, 130, MAX(320, self.cardScrollView.contentSize.width - 40), 30);
+            empty.frame = NSMakeRect(20, MAX(24, documentHeight / 2.0 - 15), MAX(320, self.cardScrollView.contentSize.width - 40), 30);
             [self.cardsDocumentView addSubview:empty];
         }
     }
@@ -2506,7 +2507,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     CGFloat x = 16;
     CGFloat y = 14;
     CGFloat width = 190;
-    CGFloat height = 246;
+    CGFloat height = MIN(MAX(self.cardScrollView.contentSize.height - 36, 246), 310);
     for (NSMutableDictionary *item in items) {
         CSCardView *card = [self cardViewForItem:item frame:NSMakeRect(x, y, width, height)];
         [self.cardsDocumentView addSubview:card];
@@ -2514,12 +2515,13 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     }
 
     CGFloat documentWidth = MAX(self.cardScrollView.contentSize.width, x + 16);
-    self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, height + 28);
+    CGFloat documentHeight = MAX(self.cardScrollView.contentSize.height, height + 28);
+    self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, documentHeight);
 
     if (items.count == 0) {
         NSTextField *empty = CSLabel(@"复制一些内容后会出现在这里", [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor);
         empty.alignment = NSTextAlignmentCenter;
-        empty.frame = NSMakeRect(20, 130, MAX(320, self.cardScrollView.contentSize.width - 40), 30);
+        empty.frame = NSMakeRect(20, MAX(24, documentHeight / 2.0 - 15), MAX(320, self.cardScrollView.contentSize.width - 40), 30);
         [self.cardsDocumentView addSubview:empty];
     }
 }
@@ -2597,35 +2599,41 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [weakSelf pasteItems:@[item] plainText:shiftPressed];
     };
 
-    NSImageView *symbol = [[NSImageView alloc] initWithFrame:NSMakeRect(12, 216, 16, 16)];
+    CGFloat previewHeight = MAX(86, frame.size.height - 160);
+    CGFloat previewY = frame.size.height - 42 - previewHeight;
+    CGFloat titleY = previewY - 42;
+    CGFloat bodyY = titleY - 32;
+    CGFloat topIconY = frame.size.height - 30;
+
+    NSImageView *symbol = [[NSImageView alloc] initWithFrame:NSMakeRect(12, topIconY, 16, 16)];
     symbol.image = [NSImage imageWithSystemSymbolName:CSKindSymbol(item[@"kind"]) accessibilityDescription:CSKindTitle(item[@"kind"])];
     [card addSubview:symbol];
 
     NSTextField *kindLabel = CSLabel(CSKindTitle(item[@"kind"]), [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], NSColor.secondaryLabelColor);
-    kindLabel.frame = NSMakeRect(34, 213, 90, 20);
+    kindLabel.frame = NSMakeRect(34, topIconY - 3, 90, 20);
     [card addSubview:kindLabel];
 
     if ([item[@"pinned"] boolValue]) {
-        NSImageView *pin = [[NSImageView alloc] initWithFrame:NSMakeRect(162, 216, 16, 16)];
+        NSImageView *pin = [[NSImageView alloc] initWithFrame:NSMakeRect(162, topIconY, 16, 16)];
         pin.image = [NSImage imageWithSystemSymbolName:@"pin.fill" accessibilityDescription:@"Pinned"];
         pin.contentTintColor = NSColor.systemOrangeColor;
         [card addSubview:pin];
     }
 
-    NSView *preview = [self previewViewForItem:item frame:NSMakeRect(12, 118, 166, 86) compact:YES];
+    NSView *preview = [self previewViewForItem:item frame:NSMakeRect(12, previewY, 166, previewHeight) compact:YES];
     preview.wantsLayer = YES;
     preview.layer.cornerRadius = 8;
     preview.layer.masksToBounds = YES;
     [card addSubview:preview];
 
     NSTextField *title = CSLabel(item[@"title"], [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSColor.labelColor);
-    title.frame = NSMakeRect(12, 76, 166, 38);
+    title.frame = NSMakeRect(12, titleY, 166, 38);
     title.maximumNumberOfLines = 2;
     title.lineBreakMode = NSLineBreakByTruncatingTail;
     [card addSubview:title];
 
     NSTextField *body = CSLabel(CSTruncate(CSCondense(item[@"body"] ?: @""), 80), [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor);
-    body.frame = NSMakeRect(12, 44, 166, 32);
+    body.frame = NSMakeRect(12, bodyY, 166, 32);
     body.maximumNumberOfLines = 2;
     [card addSubview:body];
 
