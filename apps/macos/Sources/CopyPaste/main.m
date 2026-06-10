@@ -3055,8 +3055,14 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 }
 
 - (NSTextField *)settingsTitleLabel:(NSString *)text {
-    NSTextField *label = CSLabel(text, [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], NSColor.labelColor);
+    NSTextField *label = CSLabel(text, [NSFont systemFontOfSize:19 weight:NSFontWeightSemibold], NSColor.labelColor);
     label.maximumNumberOfLines = 1;
+    return label;
+}
+
+- (NSTextField *)settingsDescriptionLabel:(NSString *)text {
+    NSTextField *label = CSLabel(text, [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
+    label.maximumNumberOfLines = 2;
     return label;
 }
 
@@ -3100,6 +3106,19 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     return stack;
 }
 
+- (NSStackView *)settingsSectionWithTitle:(NSString *)title description:(NSString *)description content:(NSView *)content {
+    NSStackView *section = NSStackView.new;
+    section.orientation = NSUserInterfaceLayoutOrientationVertical;
+    section.spacing = 10;
+    section.alignment = NSLayoutAttributeLeading;
+    [section addArrangedSubview:CSLabel(title, [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSColor.labelColor)];
+    if (description.length > 0) {
+        [section addArrangedSubview:[self settingsDescriptionLabel:description]];
+    }
+    [section addArrangedSubview:content];
+    return section;
+}
+
 - (NSBox *)settingsDivider {
     NSBox *divider = NSBox.new;
     divider.boxType = NSBoxSeparator;
@@ -3137,6 +3156,9 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     button.imagePosition = NSImageLeft;
     button.toolTip = title;
     [button.heightAnchor constraintEqualToConstant:36].active = YES;
+    [button.widthAnchor constraintEqualToConstant:134].active = YES;
+    [button setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [button setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [self styleNavigationButton:button selected:NO];
     return button;
 }
@@ -3146,12 +3168,12 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 }
 
 - (void)buildModernWindow {
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 740, 520)
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, 500)
                                              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                                                backing:NSBackingStoreBuffered
                                                  defer:NO];
     self.window.title = @"CopyPaste 设置";
-    self.window.minSize = NSMakeSize(700, 480);
+    self.window.minSize = NSMakeSize(660, 460);
     self.window.releasedWhenClosed = NO;
     self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorTransient;
 
@@ -3176,12 +3198,13 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     NSStackView *sidebar = NSStackView.new;
     sidebar.orientation = NSUserInterfaceLayoutOrientationVertical;
     sidebar.spacing = 10;
-    sidebar.edgeInsets = NSEdgeInsetsMake(18, 14, 18, 14);
+    sidebar.alignment = NSLayoutAttributeLeading;
+    sidebar.edgeInsets = NSEdgeInsetsMake(18, 16, 18, 16);
     sidebar.wantsLayer = YES;
     sidebar.layer.cornerRadius = 12;
     self.modernSidebarView = sidebar;
     [root addArrangedSubview:sidebar];
-    [sidebar.widthAnchor constraintEqualToConstant:168].active = YES;
+    [sidebar.widthAnchor constraintEqualToConstant:166].active = YES;
 
     [sidebar addArrangedSubview:CSLabel(@"CopyPaste", [NSFont systemFontOfSize:19 weight:NSFontWeightSemibold], NSColor.labelColor)];
     NSTextField *subtitle = CSLabel(@"偏好设置", [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
@@ -3195,10 +3218,12 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.interfaceStyleControl.segmentStyle = NSSegmentStyleRounded;
     self.interfaceStyleControl.toolTip = @"切换 CopyPaste 的界面布局";
     [self.interfaceStyleControl.heightAnchor constraintEqualToConstant:30].active = YES;
+    [self.interfaceStyleControl.widthAnchor constraintEqualToConstant:112].active = YES;
     [sidebar addArrangedSubview:self.interfaceStyleControl];
 
     NSBox *divider = NSBox.new;
     divider.boxType = NSBoxSeparator;
+    [divider.widthAnchor constraintEqualToConstant:134].active = YES;
     [sidebar addArrangedSubview:divider];
 
     CSActionButton *generalButton = [self modernNavigationButtonWithTitle:@"通用" symbol:@"gearshape" index:0];
@@ -3219,8 +3244,8 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 
     self.modernContentStack = NSStackView.new;
     self.modernContentStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    self.modernContentStack.spacing = 13;
-    self.modernContentStack.edgeInsets = NSEdgeInsetsMake(22, 24, 22, 24);
+    self.modernContentStack.spacing = 18;
+    self.modernContentStack.edgeInsets = NSEdgeInsetsMake(26, 28, 26, 28);
     self.modernContentStack.alignment = NSLayoutAttributeLeading;
     self.modernContentStack.translatesAutoresizingMaskIntoConstraints = NO;
     [panel addSubview:self.modernContentStack];
@@ -3242,12 +3267,24 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     [self refreshModernNavigationSelection];
     NSArray<NSString *> *titles = @[@"通用", @"快捷键", @"外观", @"忽略应用"];
     NSString *title = titles[(NSUInteger)self.modernSelectedSection];
-    [self.modernContentStack addArrangedSubview:[self settingsTitleLabel:title]];
+    NSArray<NSString *> *descriptions = @[
+        @"选择 CopyPaste 日常使用时的默认行为。",
+        @"设置唤醒面板和自动粘贴所需的系统权限。",
+        @"调整界面外观、透明度和面板位置策略。",
+        @"管理历史数量，以及不记录剪贴板的应用。"
+    ];
+    NSStackView *header = NSStackView.new;
+    header.orientation = NSUserInterfaceLayoutOrientationVertical;
+    header.spacing = 4;
+    header.alignment = NSLayoutAttributeLeading;
+    [header addArrangedSubview:[self settingsTitleLabel:title]];
+    [header addArrangedSubview:[self settingsDescriptionLabel:descriptions[(NSUInteger)self.modernSelectedSection]]];
+    [self.modernContentStack addArrangedSubview:header];
 
     if (self.modernSelectedSection == 0) {
         NSStackView *checks = [self settingsCheckboxStackWithKeys:@[@"autoPaste", @"hideAfterSelection", @"showDetailPreview", @"captureImages", @"showDock"]
                                                            titles:@[@"复制后自动粘贴", @"选择后自动隐藏", @"显示内容预览", @"记录图片内容", @"在 Dock 中显示图标"]];
-        [self.modernContentStack addArrangedSubview:[self settingsRowWithTitle:@"基础选项" control:checks subtitle:@"这些选项控制 CopyPaste 日常使用时的默认行为。"]];
+        [self.modernContentStack addArrangedSubview:[self settingsSectionWithTitle:@"基础选项" description:nil content:checks]];
     } else if (self.modernSelectedSection == 1) {
         self.hotKeyRecorder = [[CSHotKeyRecorder alloc] initWithFrame:NSZeroRect];
         [self.hotKeyRecorder.widthAnchor constraintEqualToConstant:190].active = YES;
