@@ -20,6 +20,7 @@ static NSString * const CSPanelPositionModeInput = @"input";
 static NSString * const CSInterfaceStyleClassic = @"classic";
 static NSString * const CSInterfaceStyleModern = @"modern";
 static UInt32 const CSHotKeySignature = 'CPST';
+static CGFloat const CSClassicPanelMaximumHeight = 520.0;
 
 static NSString *CSUUID(void) {
     return NSUUID.UUID.UUIDString;
@@ -1541,6 +1542,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.panel.backgroundColor = NSColor.clearColor;
     self.panel.hasShadow = YES;
     self.panel.minSize = modern ? NSMakeSize(980, 540) : NSMakeSize(820, 430);
+    self.panel.maxSize = modern ? NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX) : NSMakeSize(CGFLOAT_MAX, CSClassicPanelMaximumHeight);
     self.panel.delegate = self;
     [[self.panel standardWindowButton:NSWindowCloseButton] setHidden:YES];
     [[self.panel standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
@@ -1606,9 +1608,12 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     NSStackView *body = NSStackView.new;
     body.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     body.spacing = 0;
+    body.alignment = NSLayoutAttributeHeight;
+    body.translatesAutoresizingMaskIntoConstraints = NO;
     [body setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
     [body setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
     [root addArrangedSubview:body];
+    [body.bottomAnchor constraintEqualToAnchor:root.bottomAnchor].active = YES;
     NSLayoutConstraint *bodyMinHeight = [body.heightAnchor constraintGreaterThanOrEqualToConstant:340];
     bodyMinHeight.priority = NSLayoutPriorityDefaultHigh;
     bodyMinHeight.active = YES;
@@ -2105,9 +2110,23 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
             height = savedFrame.size.height;
         }
     }
+    if (![self isModernInterface]) {
+        height = MIN(height, CSClassicPanelMaximumHeight);
+    }
     width = MIN(MAX(width, self.panel.minSize.width), visible.size.width);
     height = MIN(MAX(height, self.panel.minSize.height), visible.size.height);
     return NSMakeSize(width, height);
+}
+
+- (NSRect)clampedFrameForCurrentInterface:(NSRect)frame screen:(NSScreen *)screen {
+    NSRect clamped = CSClampFrameToVisibleScreen(frame, screen);
+    if (![self isModernInterface] && clamped.size.height > CSClassicPanelMaximumHeight) {
+        CGFloat top = NSMaxY(clamped);
+        clamped.size.height = CSClassicPanelMaximumHeight;
+        clamped.origin.y = top - clamped.size.height;
+        clamped = CSClampFrameToVisibleScreen(clamped, screen);
+    }
+    return clamped;
 }
 
 - (NSRect)defaultPanelFrameWithSize:(NSSize)size screen:(NSScreen *)screen {
@@ -2210,7 +2229,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         }
     }
 
-    [self.panel setFrame:frame display:YES];
+    [self.panel setFrame:[self clampedFrameForCurrentInterface:frame screen:CSScreenForRect(frame)] display:YES];
 }
 
 - (void)rememberCurrentPanelFrameIfNeeded {
@@ -2259,6 +2278,12 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     [self updateCardSelectionStyles];
 }
 
+- (void)windowDidResize:(NSNotification *)notification {
+    if (notification.object == self.panel) {
+        [self reloadCards];
+    }
+}
+
 - (void)reloadAll {
     NSString *style = CSInterfaceStyleFromPreferences(self.store.preferences);
     if (![style isEqualToString:self.currentInterfaceStyle]) {
@@ -2267,7 +2292,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [self.shortcutsPopover close];
         [self.panel orderOut:nil];
         [self buildPanel];
-        [self.panel setFrame:CSClampFrameToVisibleScreen(frame, CSScreenForRect(frame)) display:NO];
+        [self.panel setFrame:[self clampedFrameForCurrentInterface:frame screen:CSScreenForRect(frame)] display:NO];
         if (wasVisible) {
             [self.panel makeKeyAndOrderFront:nil];
             [self.panel makeFirstResponder:self.searchField];
