@@ -59,6 +59,8 @@ static NSString *CSKindSymbol(NSString *kind) {
     return @"text.alignleft";
 }
 
+static NSString *CSRelativeDate(NSNumber *timestamp);
+
 static NSString *CSSHA256(NSString *value) {
     NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding] ?: NSData.data;
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
@@ -78,6 +80,60 @@ static NSString *CSDominantTitle(NSString *text) {
     }
     NSString *firstLine = [trimmed componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet].firstObject ?: trimmed;
     return CSTruncate(CSCondense(firstLine), 58);
+}
+
+static NSString *CSDisplayTitleForItem(NSDictionary *item) {
+    NSString *kind = item[@"kind"];
+    if ([kind isEqualToString:CSKindImage]) {
+        return @"图片内容";
+    }
+    if ([kind isEqualToString:CSKindFile]) {
+        NSString *title = CSTrim(item[@"title"] ?: @"");
+        return title.length > 0 ? title : @"文件";
+    }
+    NSString *title = CSTrim(item[@"title"] ?: @"");
+    if (title.length > 0) {
+        return title;
+    }
+    return CSDominantTitle(item[@"body"] ?: @"");
+}
+
+static NSString *CSCardSummaryForItem(NSDictionary *item) {
+    NSString *kind = item[@"kind"];
+    if ([kind isEqualToString:CSKindImage]) {
+        return @"";
+    }
+    if ([kind isEqualToString:CSKindFile]) {
+        NSArray *paths = [item[@"filePaths"] isKindOfClass:NSArray.class] ? item[@"filePaths"] : @[];
+        NSString *path = paths.firstObject ?: item[@"body"] ?: @"";
+        NSString *parent = path.stringByDeletingLastPathComponent;
+        return parent.length > 0 ? CSTruncate(parent, 90) : @"文件路径";
+    }
+    return CSTruncate(CSCondense(item[@"body"] ?: @""), 160);
+}
+
+static NSString *CSSourceAndDateForItem(NSDictionary *item) {
+    NSString *source = CSTrim(item[@"sourceAppName"] ?: @"");
+    NSString *date = CSRelativeDate(item[@"date"]);
+    if (source.length == 0) {
+        return date;
+    }
+    return [NSString stringWithFormat:@"%@ · %@", source, date];
+}
+
+static NSString *CSDetailMetricForItem(NSDictionary *item) {
+    NSString *kind = item[@"kind"];
+    if ([kind isEqualToString:CSKindImage]) {
+        NSString *dimensions = CSTrim(item[@"body"] ?: @"");
+        return dimensions.length > 0 ? [@"尺寸 " stringByAppendingString:dimensions] : @"图片";
+    }
+    if ([kind isEqualToString:CSKindFile]) {
+        NSArray *paths = [item[@"filePaths"] isKindOfClass:NSArray.class] ? item[@"filePaths"] : @[];
+        NSUInteger count = paths.count > 0 ? paths.count : 1;
+        return [NSString stringWithFormat:@"%lu 个文件", (unsigned long)count];
+    }
+    NSString *body = item[@"body"] ?: @"";
+    return [NSString stringWithFormat:@"%lu 个字符", (unsigned long)body.length];
 }
 
 static BOOL CSIsLikelyURL(NSString *value) {
@@ -2550,18 +2606,18 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     symbol.contentTintColor = selected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor;
     [card addSubview:symbol];
 
-    NSTextField *title = CSLabel(item[@"title"], [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor);
+    NSTextField *title = CSLabel(CSDisplayTitleForItem(item), [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor);
     title.frame = NSMakeRect(44, 48, frame.size.width - 132, 22);
     title.lineBreakMode = NSLineBreakByTruncatingTail;
     [card addSubview:title];
 
-    NSString *bodyText = CSTruncate(CSCondense(item[@"body"] ?: @""), 140);
+    NSString *bodyText = CSCardSummaryForItem(item);
     NSTextField *body = CSLabel(bodyText.length > 0 ? bodyText : CSKindTitle(item[@"kind"]), [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
     body.frame = NSMakeRect(44, 28, frame.size.width - 96, 18);
     body.lineBreakMode = NSLineBreakByTruncatingTail;
     [card addSubview:body];
 
-    NSString *meta = [NSString stringWithFormat:@"%@ · %@", CSKindTitle(item[@"kind"]), CSRelativeDate(item[@"date"])];
+    NSString *meta = [NSString stringWithFormat:@"%@ · %@", CSKindTitle(item[@"kind"]), CSSourceAndDateForItem(item)];
     NSTextField *source = CSLabel(meta, [NSFont systemFontOfSize:11], NSColor.tertiaryLabelColor);
     source.frame = NSMakeRect(44, 10, frame.size.width - 120, 16);
     [card addSubview:source];
@@ -2599,18 +2655,17 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [weakSelf pasteItems:@[item] plainText:shiftPressed];
     };
 
-    CGFloat previewHeight = MAX(86, frame.size.height - 160);
-    CGFloat previewY = frame.size.height - 42 - previewHeight;
-    CGFloat titleY = previewY - 42;
-    CGFloat bodyY = titleY - 32;
+    CGFloat contentY = 48;
+    CGFloat contentHeight = MAX(128, frame.size.height - 102);
     CGFloat topIconY = frame.size.height - 30;
 
     NSImageView *symbol = [[NSImageView alloc] initWithFrame:NSMakeRect(12, topIconY, 16, 16)];
     symbol.image = [NSImage imageWithSystemSymbolName:CSKindSymbol(item[@"kind"]) accessibilityDescription:CSKindTitle(item[@"kind"])];
+    symbol.contentTintColor = selected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor;
     [card addSubview:symbol];
 
     NSTextField *kindLabel = CSLabel(CSKindTitle(item[@"kind"]), [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], NSColor.secondaryLabelColor);
-    kindLabel.frame = NSMakeRect(34, topIconY - 3, 90, 20);
+    kindLabel.frame = NSMakeRect(34, topIconY - 3, 112, 20);
     [card addSubview:kindLabel];
 
     if ([item[@"pinned"] boolValue]) {
@@ -2620,31 +2675,37 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [card addSubview:pin];
     }
 
-    NSView *preview = [self previewViewForItem:item frame:NSMakeRect(12, previewY, 166, previewHeight) compact:YES];
-    preview.wantsLayer = YES;
-    preview.layer.cornerRadius = 8;
-    preview.layer.masksToBounds = YES;
-    [card addSubview:preview];
+    NSString *kind = item[@"kind"];
+    if ([kind isEqualToString:CSKindImage]) {
+        NSView *preview = [self previewViewForItem:item frame:NSMakeRect(12, contentY, 166, contentHeight) compact:YES];
+        preview.wantsLayer = YES;
+        preview.layer.cornerRadius = 9;
+        preview.layer.masksToBounds = YES;
+        [card addSubview:preview];
+    } else {
+        NSView *contentPanel = [[NSView alloc] initWithFrame:NSMakeRect(12, contentY, 166, contentHeight)];
+        contentPanel.wantsLayer = YES;
+        contentPanel.layer.cornerRadius = 9;
+        contentPanel.layer.backgroundColor = [self adjustedControlBackgroundColorWithAlpha:0.52].CGColor;
+        [card addSubview:contentPanel];
 
-    NSTextField *title = CSLabel(item[@"title"], [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSColor.labelColor);
-    title.frame = NSMakeRect(12, titleY, 166, 38);
-    title.maximumNumberOfLines = 2;
-    title.lineBreakMode = NSLineBreakByTruncatingTail;
-    [card addSubview:title];
+        NSTextField *title = CSLabel(CSDisplayTitleForItem(item), [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSColor.labelColor);
+        title.frame = NSMakeRect(12, contentHeight - 52, 142, 40);
+        title.maximumNumberOfLines = 2;
+        title.lineBreakMode = NSLineBreakByTruncatingTail;
+        [contentPanel addSubview:title];
 
-    NSTextField *body = CSLabel(CSTruncate(CSCondense(item[@"body"] ?: @""), 80), [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor);
-    body.frame = NSMakeRect(12, bodyY, 166, 32);
-    body.maximumNumberOfLines = 2;
-    [card addSubview:body];
+        NSTextField *summary = CSLabel(CSCardSummaryForItem(item), [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor);
+        summary.frame = NSMakeRect(12, 14, 142, MAX(42, contentHeight - 74));
+        summary.maximumNumberOfLines = [kind isEqualToString:CSKindFile] ? 3 : 5;
+        summary.lineBreakMode = NSLineBreakByTruncatingTail;
+        [contentPanel addSubview:summary];
+    }
 
-    NSTextField *source = CSLabel((item[@"sourceAppName"] ?: @"未知来源"), [NSFont systemFontOfSize:10], NSColor.tertiaryLabelColor);
-    source.frame = NSMakeRect(12, 14, 96, 16);
-    [card addSubview:source];
-
-    NSTextField *date = CSLabel(CSRelativeDate(item[@"date"]), [NSFont systemFontOfSize:10], NSColor.tertiaryLabelColor);
-    date.alignment = NSTextAlignmentRight;
-    date.frame = NSMakeRect(112, 14, 66, 16);
-    [card addSubview:date];
+    NSTextField *meta = CSLabel(CSSourceAndDateForItem(item), [NSFont systemFontOfSize:10], NSColor.tertiaryLabelColor);
+    meta.frame = NSMakeRect(12, 14, 166, 16);
+    meta.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:meta];
     return card;
 }
 
@@ -2809,13 +2870,11 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [self.detailStack addArrangedSubview:preview];
     }
 
-    NSTextField *title = CSLabel(item[@"title"], [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold], NSColor.labelColor);
+    NSTextField *title = CSLabel(CSDisplayTitleForItem(item), [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold], NSColor.labelColor);
     title.maximumNumberOfLines = 2;
     [self.detailStack addArrangedSubview:title];
 
-    if ([item[@"sourceAppName"] length] > 0) {
-        [self.detailStack addArrangedSubview:CSLabel(item[@"sourceAppName"], [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor)];
-    }
+    [self.detailStack addArrangedSubview:[self detailMetadataViewForItem:item]];
 
     [self.detailStack addArrangedSubview:[self boardChipsForItem:item]];
 
@@ -2847,6 +2906,45 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     if (self.store.lastNotice.length > 0) {
         [self.detailStack addArrangedSubview:CSLabel(self.store.lastNotice, [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor)];
     }
+}
+
+- (NSView *)detailMetadataViewForItem:(NSDictionary *)item {
+    NSMutableArray<NSArray<NSString *> *> *rows = NSMutableArray.array;
+    void (^addRow)(NSString *, NSString *) = ^(NSString *labelText, NSString *valueText) {
+        NSString *cleanValue = CSTrim(valueText ?: @"");
+        if (cleanValue.length > 0) {
+            [rows addObject:@[labelText, cleanValue]];
+        }
+    };
+
+    addRow(@"来源", item[@"sourceAppName"]);
+    addRow(@"信息", CSDetailMetricForItem(item));
+    if ([item[@"kind"] isEqualToString:CSKindFile]) {
+        NSArray *paths = [item[@"filePaths"] isKindOfClass:NSArray.class] ? item[@"filePaths"] : @[];
+        addRow(@"路径", paths.firstObject ?: item[@"body"] ?: @"");
+    }
+    addRow(@"应用 ID", item[@"sourceBundleID"]);
+
+    CGFloat width = [self isModernInterface] ? 294.0 : 258.0;
+    CGFloat rowHeight = 18.0;
+    CGFloat height = MAX(18.0, (CGFloat)rows.count * rowHeight);
+    NSView *metadata = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
+    [metadata.widthAnchor constraintEqualToConstant:width].active = YES;
+    [metadata.heightAnchor constraintEqualToConstant:height].active = YES;
+
+    for (NSUInteger index = 0; index < rows.count; index++) {
+        NSArray<NSString *> *row = rows[index];
+        CGFloat y = height - ((CGFloat)index + 1.0) * rowHeight;
+        NSTextField *label = CSLabel(row.firstObject, [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], NSColor.tertiaryLabelColor);
+        label.frame = NSMakeRect(0, y, 54, rowHeight);
+        [metadata addSubview:label];
+
+        NSTextField *value = CSLabel(row.lastObject, [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor);
+        value.frame = NSMakeRect(62, y, width - 62, rowHeight);
+        value.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        [metadata addSubview:value];
+    }
+    return metadata;
 }
 
 - (NSView *)boardChipsForItem:(NSMutableDictionary *)item {
