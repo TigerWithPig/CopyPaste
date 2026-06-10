@@ -1,0 +1,12 @@
+.build/
+.swiftpm/
+DerivedData/
+.DS_Store
+
+apps/macos/.build/
+apps/macos/.swiftpm/
+apps/macos/outputs/*.app/
+apps/macos/outputs/*.zip
+apps/macos/outputs/*.dmg
+apps/macos/work/
+apps/macos/DerivedData/
