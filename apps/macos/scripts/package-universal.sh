@@ -5,6 +5,7 @@ APP_NAME="CopyPaste"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTPUT_DIR="$ROOT_DIR/outputs"
 APP_DIR="$OUTPUT_DIR/$APP_NAME.app"
+ZIP_PATH="$OUTPUT_DIR/${APP_NAME}-universal.zip"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -42,6 +43,10 @@ cp "$INFO_PLIST" "$CONTENTS_DIR/Info.plist"
 find "$ROOT_DIR/Resources" -maxdepth 1 -type f ! -name "Info.plist" -exec cp {} "$RESOURCES_DIR/" \;
 chmod +x "$MACOS_DIR/$APP_NAME"
 
+if command -v xattr >/dev/null 2>&1; then
+    xattr -cr "$APP_DIR" || true
+fi
+
 if command -v lipo >/dev/null 2>&1; then
     lipo -info "$MACOS_DIR/$APP_NAME"
 fi
@@ -50,9 +55,20 @@ if command -v codesign >/dev/null 2>&1; then
     codesign --force --deep --sign - "$APP_DIR"
 fi
 
-if command -v ditto >/dev/null 2>&1; then
-    ditto -c -k --keepParent "$APP_DIR" "$OUTPUT_DIR/${APP_NAME}-universal.zip"
-    echo "Created $OUTPUT_DIR/${APP_NAME}-universal.zip"
+if command -v xattr >/dev/null 2>&1; then
+    xattr -cr "$APP_DIR" || true
+fi
+
+rm -f "$ZIP_PATH"
+if command -v zip >/dev/null 2>&1; then
+    (
+        cd "$OUTPUT_DIR"
+        COPYFILE_DISABLE=1 zip -qry --symlinks "$ZIP_PATH" "$APP_NAME.app"
+    )
+    echo "Created $ZIP_PATH"
+elif command -v ditto >/dev/null 2>&1; then
+    ditto -c -k --norsrc --keepParent "$APP_DIR" "$ZIP_PATH"
+    echo "Created $ZIP_PATH"
 fi
 
 echo "Created $APP_DIR"

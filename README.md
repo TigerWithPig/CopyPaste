@@ -52,6 +52,15 @@ To use it:
 
 Automatic paste requires macOS Accessibility permission. If permission is not granted, CopyPaste will still put the selected item back on the system clipboard, and you can paste manually with `Command + V`.
 
+## Interface Styles
+
+CopyPaste supports two interface styles:
+
+- `Classic`: the original compact interface and interaction model.
+- `Modern`: a newer three-column layout with a redesigned settings window.
+
+The default style is `Classic`, so existing users keep the familiar UI after upgrading. You can switch styles in CopyPaste settings.
+
 ## Accessibility Permission
 
 To enable automatic paste:
