@@ -1542,7 +1542,6 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.panel.backgroundColor = NSColor.clearColor;
     self.panel.hasShadow = YES;
     self.panel.minSize = modern ? NSMakeSize(980, 540) : NSMakeSize(820, 430);
-    self.panel.maxSize = modern ? NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX) : NSMakeSize(CGFLOAT_MAX, CSClassicPanelMaximumHeight);
     self.panel.delegate = self;
     [[self.panel standardWindowButton:NSWindowCloseButton] setHidden:YES];
     [[self.panel standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
@@ -2282,6 +2281,13 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     if (notification.object == self.panel) {
         [self reloadCards];
     }
+}
+
+- (NSSize)windowWillResize:(NSWindow *)sender toSize:(NSSize)frameSize {
+    if (sender == self.panel && ![self isModernInterface]) {
+        frameSize.height = MIN(frameSize.height, CSClassicPanelMaximumHeight);
+    }
+    return frameSize;
 }
 
 - (void)reloadAll {
