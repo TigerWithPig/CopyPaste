@@ -17,7 +17,10 @@ static NSString * const CSPanelPositionModeCustom = @"custom";
 static NSString * const CSPanelPositionModeLast = @"last";
 static NSString * const CSPanelPositionModeMouse = @"mouse";
 static NSString * const CSPanelPositionModeInput = @"input";
+static NSString * const CSInterfaceStyleClassic = @"classic";
+static NSString * const CSInterfaceStyleModern = @"modern";
 static UInt32 const CSHotKeySignature = 'CPST';
+static CGFloat const CSClassicPanelMaximumHeight = 390.0;
 
 static NSString *CSUUID(void) {
     return NSUUID.UUID.UUIDString;
@@ -56,6 +59,9 @@ static NSString *CSKindSymbol(NSString *kind) {
     return @"text.alignleft";
 }
 
+static NSString *CSRelativeDate(NSNumber *timestamp);
+static NSString *CSDetailMetricForItem(NSDictionary *item);
+
 static NSString *CSSHA256(NSString *value) {
     NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding] ?: NSData.data;
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
@@ -75,6 +81,82 @@ static NSString *CSDominantTitle(NSString *text) {
     }
     NSString *firstLine = [trimmed componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet].firstObject ?: trimmed;
     return CSTruncate(CSCondense(firstLine), 58);
+}
+
+static NSString *CSDisplayTitleForItem(NSDictionary *item) {
+    NSString *kind = item[@"kind"];
+    if ([kind isEqualToString:CSKindImage]) {
+        return @"图片内容";
+    }
+    if ([kind isEqualToString:CSKindFile]) {
+        NSString *title = CSTrim(item[@"title"] ?: @"");
+        return title.length > 0 ? title : @"文件";
+    }
+    NSString *title = CSTrim(item[@"title"] ?: @"");
+    if (title.length > 0) {
+        return title;
+    }
+    return CSDominantTitle(item[@"body"] ?: @"");
+}
+
+static NSString *CSCardSummaryForItem(NSDictionary *item) {
+    NSString *kind = item[@"kind"];
+    if ([kind isEqualToString:CSKindImage]) {
+        return @"";
+    }
+    if ([kind isEqualToString:CSKindFile]) {
+        NSArray *paths = [item[@"filePaths"] isKindOfClass:NSArray.class] ? item[@"filePaths"] : @[];
+        NSString *path = paths.firstObject ?: item[@"body"] ?: @"";
+        NSString *parent = path.stringByDeletingLastPathComponent;
+        return parent.length > 0 ? CSTruncate(parent, 90) : @"文件路径";
+    }
+    return CSTruncate(CSCondense(item[@"body"] ?: @""), 160);
+}
+
+static NSString *CSModernSecondaryTextForItem(NSDictionary *item) {
+    NSString *kind = item[@"kind"];
+    if ([kind isEqualToString:CSKindImage]) {
+        return CSDetailMetricForItem(item);
+    }
+    NSString *summary = CSCardSummaryForItem(item);
+    NSString *title = CSDisplayTitleForItem(item);
+    if (summary.length == 0) {
+        return @"";
+    }
+    if ([summary isEqualToString:title]) {
+        return @"";
+    }
+    if ([summary hasPrefix:title]) {
+        NSString *remaining = CSTrim([summary substringFromIndex:title.length]);
+        if (remaining.length > 0) {
+            return remaining;
+        }
+    }
+    return summary;
+}
+
+static NSString *CSSourceAndDateForItem(NSDictionary *item) {
+    NSString *source = CSTrim(item[@"sourceAppName"] ?: @"");
+    NSString *date = CSRelativeDate(item[@"date"]);
+    if (source.length == 0) {
+        return date;
+    }
+    return [NSString stringWithFormat:@"%@ · %@", source, date];
+}
+
+static NSString *CSDetailMetricForItem(NSDictionary *item) {
+    NSString *kind = item[@"kind"];
+    if ([kind isEqualToString:CSKindImage]) {
+        NSString *dimensions = CSTrim(item[@"body"] ?: @"");
+        return dimensions.length > 0 ? [@"尺寸 " stringByAppendingString:dimensions] : @"图片";
+    }
+    if ([kind isEqualToString:CSKindFile]) {
+        NSArray *paths = [item[@"filePaths"] isKindOfClass:NSArray.class] ? item[@"filePaths"] : @[];
+        NSUInteger count = paths.count > 0 ? paths.count : 1;
+        return [NSString stringWithFormat:@"%lu 个文件", (unsigned long)count];
+    }
+    NSString *body = item[@"body"] ?: @"";
+    return [NSString stringWithFormat:@"%lu 个字符", (unsigned long)body.length];
 }
 
 static BOOL CSIsLikelyURL(NSString *value) {
@@ -143,6 +225,14 @@ static NSAppearance *CSAppearanceFromMode(NSString *mode) {
         return [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     }
     return nil;
+}
+
+static NSString *CSInterfaceStyleFromPreferences(NSDictionary *preferences) {
+    NSString *style = preferences[@"interfaceStyle"];
+    if ([style isEqualToString:CSInterfaceStyleModern]) {
+        return style;
+    }
+    return CSInterfaceStyleClassic;
 }
 
 static NSString *CSPanelSizeModeFromPreferences(NSDictionary *preferences) {
@@ -438,6 +528,15 @@ static void CSClearStack(NSStackView *stack) {
     if (self.handler) {
         self.handler();
     }
+}
+@end
+
+@interface CSFlippedView : NSView
+@end
+
+@implementation CSFlippedView
+- (BOOL)isFlipped {
+    return YES;
 }
 @end
 
@@ -808,6 +907,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         @"appearanceMode": CSAppearanceModeSystem,
         @"panelSizeMode": CSPanelSizeModeTemporary,
         @"panelPositionMode": CSPanelPositionModeDefault,
+        @"interfaceStyle": CSInterfaceStyleClassic,
         @"hotKey": CSDefaultHotKeyPreference(),
         @"ignoredBundleIDs": @[@"com.apple.keychainaccess", @"com.apple.Passwords"],
         @"showDock": @NO
@@ -822,6 +922,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.preferences[@"appearanceMode"] = CSAppearanceModeFromPreferences(self.preferences);
     self.preferences[@"panelSizeMode"] = CSPanelSizeModeFromPreferences(self.preferences);
     self.preferences[@"panelPositionMode"] = CSPanelPositionModeFromPreferences(self.preferences);
+    self.preferences[@"interfaceStyle"] = CSInterfaceStyleFromPreferences(self.preferences);
     self.preferences[@"hotKey"] = CSHotKeyFromPreferences(self.preferences);
     [self.preferences removeObjectForKey:@"interfaceBrightness"];
 }
@@ -1462,12 +1563,14 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 @property (nonatomic, strong) NSVisualEffectView *panelEffectView;
 @property (nonatomic, strong) NSSearchField *searchField;
 @property (nonatomic, strong) NSStackView *sidebarStack;
+@property (nonatomic, strong) NSStackView *kindFilterStack;
 @property (nonatomic, strong) NSScrollView *cardScrollView;
 @property (nonatomic, strong) NSView *cardsDocumentView;
 @property (nonatomic, strong) NSStackView *detailStack;
 @property (nonatomic, strong) CSActionButton *windowPinButton;
 @property (nonatomic, strong) NSPopover *shortcutsPopover;
 @property (nonatomic, strong) NSRunningApplication *lastTargetApplication;
+@property (nonatomic, copy) NSString *currentInterfaceStyle;
 @property (nonatomic, assign) BOOL windowPinned;
 @property (nonatomic, assign) BOOL suppressNextDeactivateClose;
 - (instancetype)initWithStore:(CSStore *)store;
@@ -1503,7 +1606,9 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 }
 
 - (void)buildPanel {
-    self.panel = [[CSFloatingPanel alloc] initWithContentRect:NSMakeRect(0, 0, 1080, 500)
+    self.currentInterfaceStyle = CSInterfaceStyleFromPreferences(self.store.preferences);
+    BOOL modern = [self.currentInterfaceStyle isEqualToString:CSInterfaceStyleModern];
+    self.panel = [[CSFloatingPanel alloc] initWithContentRect:modern ? NSMakeRect(0, 0, 1180, 640) : NSMakeRect(0, 0, 1080, 500)
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskFullSizeContentView | NSWindowStyleMaskResizable
                                                       backing:NSBackingStoreBuffered
                                                         defer:NO];
@@ -1515,7 +1620,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.panel.opaque = NO;
     self.panel.backgroundColor = NSColor.clearColor;
     self.panel.hasShadow = YES;
-    self.panel.minSize = NSMakeSize(820, 430);
+    self.panel.minSize = modern ? NSMakeSize(980, 540) : NSMakeSize(820, 360);
     self.panel.delegate = self;
     [[self.panel standardWindowButton:NSWindowCloseButton] setHidden:YES];
     [[self.panel standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
@@ -1544,6 +1649,12 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         return NO;
     };
     [self applyWindowPinState];
+
+    if (modern) {
+        [self buildModernPanelContent];
+        [self reloadAll];
+        return;
+    }
 
     NSVisualEffectView *effect = NSVisualEffectView.new;
     effect.material = NSVisualEffectMaterialHUDWindow;
@@ -1575,10 +1686,13 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     NSStackView *body = NSStackView.new;
     body.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     body.spacing = 0;
+    body.alignment = NSLayoutAttributeHeight;
+    body.translatesAutoresizingMaskIntoConstraints = NO;
     [body setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
     [body setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
     [root addArrangedSubview:body];
-    NSLayoutConstraint *bodyMinHeight = [body.heightAnchor constraintGreaterThanOrEqualToConstant:340];
+    [body.bottomAnchor constraintEqualToAnchor:root.bottomAnchor].active = YES;
+    NSLayoutConstraint *bodyMinHeight = [body.heightAnchor constraintGreaterThanOrEqualToConstant:292];
     bodyMinHeight.priority = NSLayoutPriorityDefaultHigh;
     bodyMinHeight.active = YES;
 
@@ -1597,7 +1711,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.cardScrollView.hasHorizontalScroller = YES;
     self.cardScrollView.hasVerticalScroller = NO;
     self.cardScrollView.drawsBackground = NO;
-    self.cardsDocumentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 290)];
+    self.cardsDocumentView = [[CSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 290)];
     self.cardScrollView.documentView = self.cardsDocumentView;
     [body addArrangedSubview:self.cardScrollView];
 
@@ -1615,6 +1729,152 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     [self.detailStack setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     [self reloadAll];
+}
+
+- (BOOL)isModernInterface {
+    return [self.currentInterfaceStyle isEqualToString:CSInterfaceStyleModern];
+}
+
+- (void)buildModernPanelContent {
+    NSVisualEffectView *effect = NSVisualEffectView.new;
+    effect.material = NSVisualEffectMaterialHUDWindow;
+    effect.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    effect.state = NSVisualEffectStateActive;
+    effect.wantsLayer = YES;
+    effect.layer.cornerRadius = 22;
+    self.panel.contentView = effect;
+    self.panelEffectView = effect;
+
+    NSStackView *root = NSStackView.new;
+    root.orientation = NSUserInterfaceLayoutOrientationVertical;
+    root.spacing = 0;
+    root.edgeInsets = NSEdgeInsetsMake(14, 18, 18, 18);
+    root.translatesAutoresizingMaskIntoConstraints = NO;
+    [effect addSubview:root];
+    [NSLayoutConstraint activateConstraints:@[
+        [root.leadingAnchor constraintEqualToAnchor:effect.leadingAnchor],
+        [root.trailingAnchor constraintEqualToAnchor:effect.trailingAnchor],
+        [root.topAnchor constraintEqualToAnchor:effect.topAnchor],
+        [root.bottomAnchor constraintEqualToAnchor:effect.bottomAnchor]
+    ]];
+
+    [root addArrangedSubview:[self makeModernTopBar]];
+
+    NSStackView *body = NSStackView.new;
+    body.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    body.spacing = 18;
+    [body setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    [body setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    [root addArrangedSubview:body];
+
+    self.sidebarStack = NSStackView.new;
+    self.sidebarStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.sidebarStack.spacing = 9;
+    self.sidebarStack.edgeInsets = NSEdgeInsetsMake(18, 16, 18, 16);
+    self.sidebarStack.wantsLayer = YES;
+    self.sidebarStack.layer.cornerRadius = 14;
+    self.sidebarStack.layer.backgroundColor = [self adjustedControlBackgroundColorWithAlpha:0.42].CGColor;
+    [body addArrangedSubview:self.sidebarStack];
+    [self.sidebarStack.widthAnchor constraintEqualToConstant:220].active = YES;
+
+    self.cardScrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    self.cardScrollView.hasHorizontalScroller = NO;
+    self.cardScrollView.hasVerticalScroller = YES;
+    self.cardScrollView.autohidesScrollers = YES;
+    self.cardScrollView.drawsBackground = NO;
+    self.cardScrollView.borderType = NSNoBorder;
+    self.cardsDocumentView = [[CSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 520, 520)];
+    self.cardScrollView.documentView = self.cardsDocumentView;
+    [body addArrangedSubview:self.cardScrollView];
+    [self.cardScrollView.widthAnchor constraintGreaterThanOrEqualToConstant:420].active = YES;
+
+    self.detailStack = NSStackView.new;
+    self.detailStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.detailStack.spacing = 14;
+    self.detailStack.edgeInsets = NSEdgeInsetsMake(18, 18, 18, 18);
+    self.detailStack.wantsLayer = YES;
+    self.detailStack.layer.cornerRadius = 14;
+    self.detailStack.layer.backgroundColor = [self adjustedControlBackgroundColorWithAlpha:0.42].CGColor;
+    [body addArrangedSubview:self.detailStack];
+    [self.detailStack.widthAnchor constraintEqualToConstant:330].active = YES;
+    [self.detailStack setHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.detailStack setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+}
+
+- (NSView *)makeModernTopBar {
+    NSStackView *bar = NSStackView.new;
+    bar.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    bar.spacing = 12;
+    bar.alignment = NSLayoutAttributeCenterY;
+    bar.edgeInsets = NSEdgeInsetsMake(8, 0, 16, 0);
+    [bar.heightAnchor constraintEqualToConstant:76].active = YES;
+
+    NSStackView *brand = NSStackView.new;
+    brand.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    brand.spacing = 10;
+    brand.alignment = NSLayoutAttributeCenterY;
+    NSImageView *icon = [[NSImageView alloc] initWithFrame:NSZeroRect];
+    icon.image = [NSImage imageNamed:@"CopyPasteIcon"];
+    if (!icon.image) {
+        icon.image = [NSImage imageWithSystemSymbolName:@"doc.on.clipboard" accessibilityDescription:@"CopyPaste"];
+    }
+    [icon.widthAnchor constraintEqualToConstant:34].active = YES;
+    [icon.heightAnchor constraintEqualToConstant:34].active = YES;
+    [brand addArrangedSubview:icon];
+
+    NSStackView *brandText = NSStackView.new;
+    brandText.orientation = NSUserInterfaceLayoutOrientationVertical;
+    brandText.spacing = 0;
+    [brandText addArrangedSubview:CSLabel(@"CopyPaste", [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], NSColor.labelColor)];
+    [brandText addArrangedSubview:CSLabel(@"Clipboard history", [NSFont systemFontOfSize:11 weight:NSFontWeightRegular], NSColor.secondaryLabelColor)];
+    [brand addArrangedSubview:brandText];
+    [brand.widthAnchor constraintEqualToConstant:246].active = YES;
+    [bar addArrangedSubview:brand];
+
+    __weak typeof(self) weakSelf = self;
+    self.searchField = CSSearchField.new;
+    self.searchField.placeholderString = @"搜索文本、链接、来源 App";
+    self.searchField.toolTip = @"输入关键词筛选；搜索框为空时按 ⌘A 全选当前列表";
+    self.searchField.target = self;
+    self.searchField.action = @selector(searchChanged:);
+    self.searchField.delegate = self;
+    ((CSSearchField *)self.searchField).emptyCommandAHandler = ^{
+        [weakSelf selectAllItems];
+    };
+    [self.searchField.heightAnchor constraintEqualToConstant:38].active = YES;
+    [self.searchField.widthAnchor constraintGreaterThanOrEqualToConstant:300].active = YES;
+    [self.searchField setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.searchField setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [bar addArrangedSubview:self.searchField];
+
+    self.kindFilterStack = nil;
+
+    __block CSActionButton *helpButton = nil;
+    helpButton = [CSActionButton buttonWithTitle:@"" symbol:@"questionmark.circle" handler:^{
+        [weakSelf showShortcutsHelpFromView:helpButton];
+    }];
+    helpButton.toolTip = @"查看快捷键和选择操作";
+    [helpButton.widthAnchor constraintEqualToConstant:34].active = YES;
+    [helpButton.heightAnchor constraintEqualToConstant:34].active = YES;
+    [bar addArrangedSubview:helpButton];
+
+    self.windowPinButton = [CSActionButton buttonWithTitle:@"" symbol:@"pin" handler:^{
+        [weakSelf toggleWindowPinned];
+    }];
+    self.windowPinButton.toolTip = @"固定面板在最前，点击桌面或切换 App 时不隐藏";
+    [self.windowPinButton.widthAnchor constraintEqualToConstant:34].active = YES;
+    [self.windowPinButton.heightAnchor constraintEqualToConstant:34].active = YES;
+    [bar addArrangedSubview:self.windowPinButton];
+    [self updateWindowPinButton];
+
+    CSActionButton *closeButton = [CSActionButton buttonWithTitle:@"" symbol:@"xmark" handler:^{
+        [weakSelf close];
+    }];
+    closeButton.toolTip = @"关闭面板";
+    [closeButton.widthAnchor constraintEqualToConstant:34].active = YES;
+    [closeButton.heightAnchor constraintEqualToConstant:34].active = YES;
+    [bar addArrangedSubview:closeButton];
+    return bar;
 }
 
 - (NSView *)makeTopBar {
@@ -1766,9 +2026,9 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 }
 
 - (void)updateWindowPinButton {
-    self.windowPinButton.title = self.windowPinned ? @"已置顶" : @"置顶";
+    self.windowPinButton.title = [self isModernInterface] ? @"" : (self.windowPinned ? @"已置顶" : @"置顶");
     self.windowPinButton.image = [NSImage imageWithSystemSymbolName:self.windowPinned ? @"pin.fill" : @"pin"
-                                           accessibilityDescription:self.windowPinButton.title];
+                                           accessibilityDescription:self.windowPinned ? @"已置顶" : @"置顶"];
     self.windowPinButton.contentTintColor = self.windowPinned ? NSColor.controlAccentColor : NSColor.labelColor;
 }
 
@@ -1899,6 +2159,14 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 }
 
 - (void)scrollSelectedCardIntoViewAtIndex:(NSUInteger)index {
+    if ([self isModernInterface]) {
+        CGFloat cardHeight = 84.0;
+        CGFloat spacing = 10.0;
+        CGFloat y = 12.0 + (CGFloat)index * (cardHeight + spacing);
+        NSRect targetRect = NSMakeRect(0, y, self.cardsDocumentView.bounds.size.width, cardHeight);
+        [self.cardsDocumentView scrollRectToVisible:targetRect];
+        return;
+    }
     CGFloat cardWidth = 190.0;
     CGFloat spacing = 12.0;
     CGFloat x = 16.0 + (CGFloat)index * (cardWidth + spacing);
@@ -1908,8 +2176,8 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 
 - (NSSize)preferredPanelSizeForScreen:(NSScreen *)screen {
     NSRect visible = screen.visibleFrame;
-    CGFloat width = MIN(MAX(visible.size.width - 96, 760), 1160);
-    CGFloat height = MIN(MAX(visible.size.height * 0.46, 420), 560);
+    CGFloat width = [self isModernInterface] ? MIN(MAX(visible.size.width - 120, 980), 1240) : MIN(MAX(visible.size.width - 96, 760), 1160);
+    CGFloat height = [self isModernInterface] ? MIN(MAX(visible.size.height * 0.68, 540), 720) : MIN(MAX(visible.size.height * 0.46, 420), 560);
     if ([CSPanelSizeModeFromPreferences(self.store.preferences) isEqualToString:CSPanelSizeModeSaved]) {
         NSRect savedFrame = NSZeroRect;
         if (CSRectFromFramePreference(self.store.preferences[@"panelSavedFrame"], &savedFrame)) {
@@ -1917,9 +2185,23 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
             height = savedFrame.size.height;
         }
     }
+    if (![self isModernInterface]) {
+        height = MIN(height, CSClassicPanelMaximumHeight);
+    }
     width = MIN(MAX(width, self.panel.minSize.width), visible.size.width);
     height = MIN(MAX(height, self.panel.minSize.height), visible.size.height);
     return NSMakeSize(width, height);
+}
+
+- (NSRect)clampedFrameForCurrentInterface:(NSRect)frame screen:(NSScreen *)screen {
+    NSRect clamped = CSClampFrameToVisibleScreen(frame, screen);
+    if (![self isModernInterface] && clamped.size.height > CSClassicPanelMaximumHeight) {
+        CGFloat top = NSMaxY(clamped);
+        clamped.size.height = CSClassicPanelMaximumHeight;
+        clamped.origin.y = top - clamped.size.height;
+        clamped = CSClampFrameToVisibleScreen(clamped, screen);
+    }
+    return clamped;
 }
 
 - (NSRect)defaultPanelFrameWithSize:(NSSize)size screen:(NSScreen *)screen {
@@ -2022,7 +2304,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         }
     }
 
-    [self.panel setFrame:frame display:YES];
+    [self.panel setFrame:[self clampedFrameForCurrentInterface:frame screen:CSScreenForRect(frame)] display:YES];
 }
 
 - (void)rememberCurrentPanelFrameIfNeeded {
@@ -2056,6 +2338,10 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     NSAppearance *appearance = CSAppearanceFromMode(CSAppearanceModeFromPreferences(self.store.preferences));
     self.panel.appearance = appearance;
     self.panel.alphaValue = CSPanelOpacityFromPreferences(self.store.preferences);
+    if ([self isModernInterface]) {
+        self.sidebarStack.layer.backgroundColor = [self adjustedControlBackgroundColorWithAlpha:0.42].CGColor;
+        self.detailStack.layer.backgroundColor = [self adjustedControlBackgroundColorWithAlpha:0.42].CGColor;
+    }
 }
 
 - (NSColor *)adjustedControlBackgroundColorWithAlpha:(CGFloat)alpha {
@@ -2067,17 +2353,49 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     [self updateCardSelectionStyles];
 }
 
+- (void)windowDidResize:(NSNotification *)notification {
+    if (notification.object == self.panel) {
+        [self reloadCards];
+    }
+}
+
+- (NSSize)windowWillResize:(NSWindow *)sender toSize:(NSSize)frameSize {
+    if (sender == self.panel && ![self isModernInterface]) {
+        frameSize.height = MIN(frameSize.height, CSClassicPanelMaximumHeight);
+    }
+    return frameSize;
+}
+
 - (void)reloadAll {
+    NSString *style = CSInterfaceStyleFromPreferences(self.store.preferences);
+    if (![style isEqualToString:self.currentInterfaceStyle]) {
+        BOOL wasVisible = self.panel.visible;
+        NSRect frame = self.panel.frame;
+        [self.shortcutsPopover close];
+        [self.panel orderOut:nil];
+        [self buildPanel];
+        [self.panel setFrame:[self clampedFrameForCurrentInterface:frame screen:CSScreenForRect(frame)] display:NO];
+        if (wasVisible) {
+            [self.panel makeKeyAndOrderFront:nil];
+            [self.panel makeFirstResponder:self.searchField];
+        }
+        return;
+    }
     [self applyInterfaceAppearance];
     self.searchField.stringValue = self.store.query ?: @"";
     [self ensureSelection];
     [self reloadSidebar];
+    [self reloadKindFilterStack];
     [self reloadCards];
     [self reloadDetail];
 }
 
 - (void)handleDeletedItemsWithIDs:(NSSet<NSString *> *)deletedItemIDs {
     if (!self.panel.visible || deletedItemIDs.count == 0) {
+        return;
+    }
+    if ([self isModernInterface]) {
+        [self reloadAll];
         return;
     }
 
@@ -2101,7 +2419,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     CGFloat x = 16;
     CGFloat y = 14;
     CGFloat width = 190;
-    CGFloat height = 246;
+    CGFloat height = MIN(MAX(self.cardScrollView.contentSize.height - 36, 246), 310);
     BOOL needsFullReload = NO;
     for (NSMutableDictionary *item in items) {
         CSCardView *card = cardsByID[item[@"id"]];
@@ -2117,11 +2435,12 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [self reloadCards];
     } else {
         CGFloat documentWidth = MAX(self.cardScrollView.contentSize.width, x + 16);
-        self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, height + 28);
+        CGFloat documentHeight = MAX(self.cardScrollView.contentSize.height, height + 28);
+        self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, documentHeight);
         if (items.count == 0) {
             NSTextField *empty = CSLabel(@"复制一些内容后会出现在这里", [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor);
             empty.alignment = NSTextAlignmentCenter;
-            empty.frame = NSMakeRect(20, 130, MAX(320, self.cardScrollView.contentSize.width - 40), 30);
+            empty.frame = NSMakeRect(20, MAX(24, documentHeight / 2.0 - 15), MAX(320, self.cardScrollView.contentSize.width - 40), 30);
             [self.cardsDocumentView addSubview:empty];
         }
     }
@@ -2190,6 +2509,37 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     [self.sidebarStack addArrangedSubview:newBoardRow];
 }
 
+- (void)reloadKindFilterStack {
+    if (!self.kindFilterStack) {
+        return;
+    }
+    CSClearStack(self.kindFilterStack);
+    __weak typeof(self) weakSelf = self;
+    NSArray<NSDictionary *> *filters = @[
+        @{@"title": @"全部", @"mode": @"all", @"value": @""},
+        @{@"title": @"文本", @"mode": @"kind", @"value": CSKindText},
+        @{@"title": @"链接", @"mode": @"kind", @"value": CSKindLink},
+        @{@"title": @"图片", @"mode": @"kind", @"value": CSKindImage},
+        @{@"title": @"文件", @"mode": @"kind", @"value": CSKindFile}
+    ];
+    for (NSDictionary *filter in filters) {
+        NSString *mode = filter[@"mode"];
+        NSString *value = filter[@"value"];
+        BOOL selected = [mode isEqualToString:@"all"] ? [self.store.filterMode isEqualToString:@"all"] : ([self.store.filterMode isEqualToString:mode] && [self.store.filterValue isEqualToString:value]);
+        CSActionButton *button = [CSActionButton buttonWithTitle:filter[@"title"] symbol:nil handler:^{
+            weakSelf.store.filterMode = mode;
+            weakSelf.store.filterValue = value;
+            [weakSelf reloadAll];
+        }];
+        button.bezelStyle = selected ? NSBezelStyleTexturedRounded : NSBezelStyleInline;
+        button.contentTintColor = selected ? NSColor.controlAccentColor : NSColor.labelColor;
+        button.toolTip = [NSString stringWithFormat:@"筛选：%@", filter[@"title"]];
+        [button.widthAnchor constraintEqualToConstant:58].active = YES;
+        [button.heightAnchor constraintEqualToConstant:32].active = YES;
+        [self.kindFilterStack addArrangedSubview:button];
+    }
+}
+
 - (NSButton *)filterButtonWithTitle:(NSString *)title symbol:(NSString *)symbol count:(NSUInteger)count selected:(BOOL)selected action:(void (^)(void))action {
     NSString *fullTitle = [NSString stringWithFormat:@"%@  %lu", title, (unsigned long)count];
     CSActionButton *button = [CSActionButton buttonWithTitle:fullTitle symbol:symbol handler:action];
@@ -2207,10 +2557,33 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 - (void)reloadCards {
     CSClearSubviews(self.cardsDocumentView);
     NSArray<NSMutableDictionary *> *items = self.store.filteredItems;
+    if ([self isModernInterface]) {
+        CGFloat width = MAX(self.cardScrollView.contentSize.width - 16, 420);
+        CGFloat cardHeight = 84;
+        CGFloat spacing = 10;
+        CGFloat y = 12;
+        for (NSMutableDictionary *item in items) {
+            CSCardView *card = [self modernCardViewForItem:item frame:NSMakeRect(8, y, width, cardHeight)];
+            [self.cardsDocumentView addSubview:card];
+            y += cardHeight + spacing;
+        }
+
+        CGFloat documentHeight = MAX(self.cardScrollView.contentSize.height, y + 12);
+        self.cardsDocumentView.frame = NSMakeRect(0, 0, MAX(self.cardScrollView.contentSize.width, width + 16), documentHeight);
+
+        if (items.count == 0) {
+            NSTextField *empty = CSLabel(@"复制一些内容后会出现在这里", [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor);
+            empty.alignment = NSTextAlignmentCenter;
+            empty.frame = NSMakeRect(16, 120, MAX(320, width - 32), 30);
+            [self.cardsDocumentView addSubview:empty];
+        }
+        return;
+    }
+
     CGFloat x = 16;
     CGFloat y = 14;
     CGFloat width = 190;
-    CGFloat height = 246;
+    CGFloat height = MIN(MAX(self.cardScrollView.contentSize.height - 36, 246), 310);
     for (NSMutableDictionary *item in items) {
         CSCardView *card = [self cardViewForItem:item frame:NSMakeRect(x, y, width, height)];
         [self.cardsDocumentView addSubview:card];
@@ -2218,14 +2591,84 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     }
 
     CGFloat documentWidth = MAX(self.cardScrollView.contentSize.width, x + 16);
-    self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, height + 28);
+    CGFloat documentHeight = MAX(self.cardScrollView.contentSize.height, height + 28);
+    self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, documentHeight);
 
     if (items.count == 0) {
         NSTextField *empty = CSLabel(@"复制一些内容后会出现在这里", [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor);
         empty.alignment = NSTextAlignmentCenter;
-        empty.frame = NSMakeRect(20, 130, MAX(320, self.cardScrollView.contentSize.width - 40), 30);
+        empty.frame = NSMakeRect(20, MAX(24, documentHeight / 2.0 - 15), MAX(320, self.cardScrollView.contentSize.width - 40), 30);
         [self.cardsDocumentView addSubview:empty];
     }
+}
+
+- (CSCardView *)modernCardViewForItem:(NSMutableDictionary *)item frame:(NSRect)frame {
+    BOOL selected = [self.store isItemSelected:item];
+    CSCardView *card = [[CSCardView alloc] initWithFrame:frame];
+    card.itemID = item[@"id"];
+    card.toolTip = @"单击选择；Shift + 单击多选；双击或 Enter 粘贴；Shift + 双击/Enter 去格式粘贴文本；Delete 删除";
+    card.wantsLayer = YES;
+    card.layer.cornerRadius = 12;
+    [self applySelectionStyleToCard:card selected:selected];
+
+    __weak typeof(self) weakSelf = self;
+    card.singleClick = ^(NSEvent *event) {
+        BOOL shiftPressed = (event.modifierFlags & NSEventModifierFlagShift) == NSEventModifierFlagShift;
+        [weakSelf selectItem:item extendingSelection:shiftPressed];
+    };
+    card.doubleClick = ^(NSEvent *event) {
+        BOOL shiftPressed = (event.modifierFlags & NSEventModifierFlagShift) == NSEventModifierFlagShift;
+        [weakSelf pasteItems:@[item] plainText:shiftPressed];
+    };
+
+    NSString *kind = item[@"kind"];
+    BOOL showsThumbnail = [kind isEqualToString:CSKindImage];
+    CGFloat trailingReserve = showsThumbnail ? 90.0 : ([item[@"pinned"] boolValue] ? 42.0 : 20.0);
+    CGFloat textWidth = MAX(180.0, frame.size.width - 44.0 - trailingReserve);
+
+    NSImageView *symbol = [[NSImageView alloc] initWithFrame:NSMakeRect(16, 50, 18, 18)];
+    symbol.image = [NSImage imageWithSystemSymbolName:CSKindSymbol(kind) accessibilityDescription:CSKindTitle(kind)];
+    symbol.contentTintColor = selected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor;
+    [card addSubview:symbol];
+
+    NSTextField *title = CSLabel(CSDisplayTitleForItem(item), [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor);
+    title.frame = NSMakeRect(44, 48, textWidth, 22);
+    title.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:title];
+
+    NSString *bodyText = CSModernSecondaryTextForItem(item);
+    if (bodyText.length > 0) {
+        NSTextField *body = CSLabel(bodyText, [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
+        body.frame = NSMakeRect(44, 28, textWidth, 18);
+        body.lineBreakMode = NSLineBreakByTruncatingTail;
+        [card addSubview:body];
+    }
+
+    NSString *meta = [NSString stringWithFormat:@"%@ · %@", CSKindTitle(kind), CSSourceAndDateForItem(item)];
+    NSTextField *source = CSLabel(meta, [NSFont systemFontOfSize:11], NSColor.tertiaryLabelColor);
+    source.frame = NSMakeRect(44, bodyText.length > 0 ? 10 : 26, textWidth, 16);
+    source.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:source];
+
+    if (showsThumbnail) {
+        CGFloat thumbnailSize = 54.0;
+        NSView *thumbnail = [self previewViewForItem:item frame:NSMakeRect(frame.size.width - thumbnailSize - 18.0, 15.0, thumbnailSize, thumbnailSize) compact:YES];
+        thumbnail.wantsLayer = YES;
+        thumbnail.layer.cornerRadius = 9;
+        thumbnail.layer.masksToBounds = YES;
+        thumbnail.layer.borderWidth = 1;
+        thumbnail.layer.borderColor = [NSColor.separatorColor colorWithAlphaComponent:0.42].CGColor;
+        [card addSubview:thumbnail];
+    }
+
+    if ([item[@"pinned"] boolValue]) {
+        CGFloat pinX = showsThumbnail ? frame.size.width - 30.0 : frame.size.width - 34.0;
+        NSImageView *pin = [[NSImageView alloc] initWithFrame:NSMakeRect(pinX, 52, 16, 16)];
+        pin.image = [NSImage imageWithSystemSymbolName:@"pin.fill" accessibilityDescription:@"Pinned"];
+        pin.contentTintColor = NSColor.systemOrangeColor;
+        [card addSubview:pin];
+    }
+    return card;
 }
 
 - (CSCardView *)cardViewForItem:(NSMutableDictionary *)item frame:(NSRect)frame {
@@ -2247,46 +2690,57 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [weakSelf pasteItems:@[item] plainText:shiftPressed];
     };
 
-    NSImageView *symbol = [[NSImageView alloc] initWithFrame:NSMakeRect(12, 216, 16, 16)];
+    CGFloat contentY = 48;
+    CGFloat contentHeight = MAX(128, frame.size.height - 102);
+    CGFloat topIconY = frame.size.height - 30;
+
+    NSImageView *symbol = [[NSImageView alloc] initWithFrame:NSMakeRect(12, topIconY, 16, 16)];
     symbol.image = [NSImage imageWithSystemSymbolName:CSKindSymbol(item[@"kind"]) accessibilityDescription:CSKindTitle(item[@"kind"])];
+    symbol.contentTintColor = selected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor;
     [card addSubview:symbol];
 
     NSTextField *kindLabel = CSLabel(CSKindTitle(item[@"kind"]), [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], NSColor.secondaryLabelColor);
-    kindLabel.frame = NSMakeRect(34, 213, 90, 20);
+    kindLabel.frame = NSMakeRect(34, topIconY - 3, 112, 20);
     [card addSubview:kindLabel];
 
     if ([item[@"pinned"] boolValue]) {
-        NSImageView *pin = [[NSImageView alloc] initWithFrame:NSMakeRect(162, 216, 16, 16)];
+        NSImageView *pin = [[NSImageView alloc] initWithFrame:NSMakeRect(162, topIconY, 16, 16)];
         pin.image = [NSImage imageWithSystemSymbolName:@"pin.fill" accessibilityDescription:@"Pinned"];
         pin.contentTintColor = NSColor.systemOrangeColor;
         [card addSubview:pin];
     }
 
-    NSView *preview = [self previewViewForItem:item frame:NSMakeRect(12, 118, 166, 86) compact:YES];
-    preview.wantsLayer = YES;
-    preview.layer.cornerRadius = 8;
-    preview.layer.masksToBounds = YES;
-    [card addSubview:preview];
+    NSString *kind = item[@"kind"];
+    if ([kind isEqualToString:CSKindImage]) {
+        NSView *preview = [self previewViewForItem:item frame:NSMakeRect(12, contentY, 166, contentHeight) compact:YES];
+        preview.wantsLayer = YES;
+        preview.layer.cornerRadius = 9;
+        preview.layer.masksToBounds = YES;
+        [card addSubview:preview];
+    } else {
+        NSView *contentPanel = [[NSView alloc] initWithFrame:NSMakeRect(12, contentY, 166, contentHeight)];
+        contentPanel.wantsLayer = YES;
+        contentPanel.layer.cornerRadius = 9;
+        contentPanel.layer.backgroundColor = [self adjustedControlBackgroundColorWithAlpha:0.52].CGColor;
+        [card addSubview:contentPanel];
 
-    NSTextField *title = CSLabel(item[@"title"], [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSColor.labelColor);
-    title.frame = NSMakeRect(12, 76, 166, 38);
-    title.maximumNumberOfLines = 2;
-    title.lineBreakMode = NSLineBreakByTruncatingTail;
-    [card addSubview:title];
+        NSTextField *title = CSLabel(CSDisplayTitleForItem(item), [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSColor.labelColor);
+        title.frame = NSMakeRect(12, contentHeight - 52, 142, 40);
+        title.maximumNumberOfLines = 2;
+        title.lineBreakMode = NSLineBreakByTruncatingTail;
+        [contentPanel addSubview:title];
 
-    NSTextField *body = CSLabel(CSTruncate(CSCondense(item[@"body"] ?: @""), 80), [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor);
-    body.frame = NSMakeRect(12, 44, 166, 32);
-    body.maximumNumberOfLines = 2;
-    [card addSubview:body];
+        NSTextField *summary = CSLabel(CSCardSummaryForItem(item), [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor);
+        summary.frame = NSMakeRect(12, 14, 142, MAX(42, contentHeight - 74));
+        summary.maximumNumberOfLines = [kind isEqualToString:CSKindFile] ? 3 : 5;
+        summary.lineBreakMode = NSLineBreakByTruncatingTail;
+        [contentPanel addSubview:summary];
+    }
 
-    NSTextField *source = CSLabel((item[@"sourceAppName"] ?: @"未知来源"), [NSFont systemFontOfSize:10], NSColor.tertiaryLabelColor);
-    source.frame = NSMakeRect(12, 14, 96, 16);
-    [card addSubview:source];
-
-    NSTextField *date = CSLabel(CSRelativeDate(item[@"date"]), [NSFont systemFontOfSize:10], NSColor.tertiaryLabelColor);
-    date.alignment = NSTextAlignmentRight;
-    date.frame = NSMakeRect(112, 14, 66, 16);
-    [card addSubview:date];
+    NSTextField *meta = CSLabel(CSSourceAndDateForItem(item), [NSFont systemFontOfSize:10], NSColor.tertiaryLabelColor);
+    meta.frame = NSMakeRect(12, 14, 166, 16);
+    meta.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:meta];
     return card;
 }
 
@@ -2307,7 +2761,9 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 - (void)applySelectionStyleToCard:(CSCardView *)card selected:(BOOL)selected {
     card.layer.borderWidth = selected ? 1.5 : 1.0;
     card.layer.borderColor = (selected ? NSColor.controlAccentColor : [NSColor.separatorColor colorWithAlphaComponent:0.55]).CGColor;
-    card.layer.backgroundColor = (selected ? [NSColor.controlAccentColor colorWithAlphaComponent:0.16] : [self adjustedControlBackgroundColorWithAlpha:0.72]).CGColor;
+    CGFloat baseAlpha = [self isModernInterface] ? 0.46 : 0.72;
+    CGFloat selectedAlpha = [self isModernInterface] ? 0.22 : 0.16;
+    card.layer.backgroundColor = (selected ? [NSColor.controlAccentColor colorWithAlphaComponent:selectedAlpha] : [self adjustedControlBackgroundColorWithAlpha:baseAlpha]).CGColor;
 }
 
 - (NSView *)previewViewForItem:(NSDictionary *)item frame:(NSRect)frame compact:(BOOL)compact {
@@ -2340,8 +2796,8 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 }
 
 - (NSView *)detailPreviewContainerForItem:(NSDictionary *)item {
-    static const CGFloat viewportWidth = 258.0;
-    static const CGFloat viewportHeight = 168.0;
+    CGFloat viewportWidth = [self isModernInterface] ? 294.0 : 258.0;
+    CGFloat viewportHeight = [self isModernInterface] ? 180.0 : 168.0;
 
     NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, viewportWidth, viewportHeight)];
     container.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2449,13 +2905,11 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [self.detailStack addArrangedSubview:preview];
     }
 
-    NSTextField *title = CSLabel(item[@"title"], [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold], NSColor.labelColor);
+    NSTextField *title = CSLabel(CSDisplayTitleForItem(item), [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold], NSColor.labelColor);
     title.maximumNumberOfLines = 2;
     [self.detailStack addArrangedSubview:title];
 
-    if ([item[@"sourceAppName"] length] > 0) {
-        [self.detailStack addArrangedSubview:CSLabel(item[@"sourceAppName"], [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor)];
-    }
+    [self.detailStack addArrangedSubview:[self detailMetadataViewForItem:item]];
 
     [self.detailStack addArrangedSubview:[self boardChipsForItem:item]];
 
@@ -2487,6 +2941,45 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     if (self.store.lastNotice.length > 0) {
         [self.detailStack addArrangedSubview:CSLabel(self.store.lastNotice, [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor)];
     }
+}
+
+- (NSView *)detailMetadataViewForItem:(NSDictionary *)item {
+    NSMutableArray<NSArray<NSString *> *> *rows = NSMutableArray.array;
+    void (^addRow)(NSString *, NSString *) = ^(NSString *labelText, NSString *valueText) {
+        NSString *cleanValue = CSTrim(valueText ?: @"");
+        if (cleanValue.length > 0) {
+            [rows addObject:@[labelText, cleanValue]];
+        }
+    };
+
+    addRow(@"来源", item[@"sourceAppName"]);
+    addRow(@"信息", CSDetailMetricForItem(item));
+    if ([item[@"kind"] isEqualToString:CSKindFile]) {
+        NSArray *paths = [item[@"filePaths"] isKindOfClass:NSArray.class] ? item[@"filePaths"] : @[];
+        addRow(@"路径", paths.firstObject ?: item[@"body"] ?: @"");
+    }
+    addRow(@"应用 ID", item[@"sourceBundleID"]);
+
+    CGFloat width = [self isModernInterface] ? 294.0 : 258.0;
+    CGFloat rowHeight = 18.0;
+    CGFloat height = MAX(18.0, (CGFloat)rows.count * rowHeight);
+    NSView *metadata = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
+    [metadata.widthAnchor constraintEqualToConstant:width].active = YES;
+    [metadata.heightAnchor constraintEqualToConstant:height].active = YES;
+
+    for (NSUInteger index = 0; index < rows.count; index++) {
+        NSArray<NSString *> *row = rows[index];
+        CGFloat y = height - ((CGFloat)index + 1.0) * rowHeight;
+        NSTextField *label = CSLabel(row.firstObject, [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], NSColor.tertiaryLabelColor);
+        label.frame = NSMakeRect(0, y, 54, rowHeight);
+        [metadata addSubview:label];
+
+        NSTextField *value = CSLabel(row.lastObject, [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor);
+        value.frame = NSMakeRect(62, y, width - 62, rowHeight);
+        value.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        [metadata addSubview:value];
+    }
+    return metadata;
 }
 
 - (NSView *)boardChipsForItem:(NSMutableDictionary *)item {
@@ -2634,6 +3127,15 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 @property (nonatomic, strong) CSStore *store;
 @property (nonatomic, strong) NSWindow *window;
 @property (nonatomic, strong) NSTextView *ignoredTextView;
+@property (nonatomic, copy) NSString *currentInterfaceStyle;
+@property (nonatomic, strong) NSSegmentedControl *interfaceStyleControl;
+@property (nonatomic, strong) NSSegmentedControl *modernSectionControl;
+@property (nonatomic, strong) NSStackView *modernContentStack;
+@property (nonatomic, strong) NSArray<CSActionButton *> *modernNavigationButtons;
+@property (nonatomic, strong) NSView *settingsContentBackgroundView;
+@property (nonatomic, strong) NSView *modernSidebarView;
+@property (nonatomic, strong) NSView *modernPanelSurfaceView;
+@property (nonatomic, assign) NSInteger modernSelectedSection;
 @property (nonatomic, strong) NSTextField *maxItemsLabel;
 @property (nonatomic, strong) NSSegmentedControl *appearanceControl;
 @property (nonatomic, strong) NSTextField *transparencyLabel;
@@ -2643,6 +3145,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 @property (nonatomic, strong) NSTextField *panelLayoutStatusLabel;
 @property (nonatomic, strong) CSHotKeyRecorder *hotKeyRecorder;
 @property (nonatomic, strong) NSTextField *hotKeyStatusLabel;
+@property (nonatomic, strong) NSView *hotKeyStatusRow;
 @property (nonatomic, copy) void (^hotKeyRecordingChanged)(BOOL recording);
 @property (nonatomic, copy) void (^panelLayoutPreviewRequested)(void);
 @property (nonatomic, copy) void (^panelLayoutSaveRequested)(void);
@@ -2661,45 +3164,486 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     return self;
 }
 
-- (void)buildWindow {
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 540, 760)
+- (NSView *)modernPanelView {
+    NSView *view = NSView.new;
+    view.wantsLayer = YES;
+    view.layer.cornerRadius = 12;
+    view.translatesAutoresizingMaskIntoConstraints = NO;
+    return view;
+}
+
+- (BOOL)settingsUseDarkAppearance {
+    NSString *match = [self.window.effectiveAppearance bestMatchFromAppearancesWithNames:@[
+        NSAppearanceNameAqua,
+        NSAppearanceNameDarkAqua
+    ]];
+    return [match isEqualToString:NSAppearanceNameDarkAqua];
+}
+
+- (NSColor *)settingsWindowBackgroundColor {
+    return [self settingsUseDarkAppearance] ? CSColorFromHex(@"1F2023", 1.0) : CSColorFromHex(@"F5F6F8", 1.0);
+}
+
+- (NSColor *)settingsSurfaceColor {
+    return [self settingsUseDarkAppearance] ? CSColorFromHex(@"2A2C30", 1.0) : CSColorFromHex(@"FFFFFF", 1.0);
+}
+
+- (NSColor *)settingsSelectedNavigationColor {
+    return [self settingsUseDarkAppearance] ? [NSColor.controlAccentColor colorWithAlphaComponent:0.26] : [NSColor.controlAccentColor colorWithAlphaComponent:0.14];
+}
+
+- (void)applySettingsSurfaceColors {
+    self.window.backgroundColor = [self settingsWindowBackgroundColor];
+    self.settingsContentBackgroundView.wantsLayer = YES;
+    self.settingsContentBackgroundView.layer.backgroundColor = [self settingsWindowBackgroundColor].CGColor;
+    self.modernSidebarView.layer.backgroundColor = [self settingsSurfaceColor].CGColor;
+    self.modernPanelSurfaceView.layer.backgroundColor = [self settingsSurfaceColor].CGColor;
+    [self refreshModernNavigationSelection];
+}
+
+- (NSTextField *)settingsTitleLabel:(NSString *)text {
+    NSTextField *label = CSLabel(text, [NSFont systemFontOfSize:19 weight:NSFontWeightSemibold], NSColor.labelColor);
+    label.maximumNumberOfLines = 1;
+    return label;
+}
+
+- (NSTextField *)settingsDescriptionLabel:(NSString *)text {
+    NSTextField *label = CSLabel(text, [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
+    label.maximumNumberOfLines = 2;
+    return label;
+}
+
+- (NSStackView *)settingsRowWithTitle:(NSString *)title control:(NSView *)control subtitle:(NSString *)subtitle {
+    NSStackView *row = NSStackView.new;
+    row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    row.spacing = 14;
+    row.alignment = NSLayoutAttributeTop;
+
+    NSTextField *label = CSLabel(title ?: @"", [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], NSColor.labelColor);
+    label.alignment = NSTextAlignmentRight;
+    [label.widthAnchor constraintEqualToConstant:118].active = YES;
+    [row addArrangedSubview:label];
+
+    NSStackView *content = NSStackView.new;
+    content.orientation = NSUserInterfaceLayoutOrientationVertical;
+    content.spacing = 5;
+    content.alignment = NSLayoutAttributeLeading;
+    [content addArrangedSubview:control];
+    if (subtitle.length > 0) {
+        NSTextField *subtitleLabel = CSLabel(subtitle, [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
+        subtitleLabel.maximumNumberOfLines = 2;
+        [content addArrangedSubview:subtitleLabel];
+    }
+    [row addArrangedSubview:content];
+    return row;
+}
+
+- (NSStackView *)settingsIndentedRowWithControl:(NSView *)control subtitle:(NSString *)subtitle {
+    return [self settingsRowWithTitle:@"" control:control subtitle:subtitle];
+}
+
+- (NSStackView *)settingsCheckboxStackWithKeys:(NSArray<NSString *> *)keys titles:(NSArray<NSString *> *)titles {
+    NSStackView *stack = NSStackView.new;
+    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    stack.spacing = 9;
+    stack.alignment = NSLayoutAttributeLeading;
+    for (NSUInteger index = 0; index < keys.count && index < titles.count; index++) {
+        [stack addArrangedSubview:[self checkboxWithTitle:titles[index] key:keys[index]]];
+    }
+    return stack;
+}
+
+- (NSStackView *)settingsSectionWithTitle:(NSString *)title description:(NSString *)description content:(NSView *)content {
+    NSStackView *section = NSStackView.new;
+    section.orientation = NSUserInterfaceLayoutOrientationVertical;
+    section.spacing = 10;
+    section.alignment = NSLayoutAttributeLeading;
+    [section addArrangedSubview:CSLabel(title, [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSColor.labelColor)];
+    if (description.length > 0) {
+        [section addArrangedSubview:[self settingsDescriptionLabel:description]];
+    }
+    [section addArrangedSubview:content];
+    return section;
+}
+
+- (NSBox *)settingsDivider {
+    NSBox *divider = NSBox.new;
+    divider.boxType = NSBoxSeparator;
+    return divider;
+}
+
+- (void)styleNavigationButton:(CSActionButton *)button selected:(BOOL)selected {
+    NSString *title = button.title.length > 0 ? button.title : button.attributedTitle.string;
+    NSColor *textColor = selected ? NSColor.controlAccentColor : NSColor.labelColor;
+    NSFont *font = [NSFont systemFontOfSize:14 weight:selected ? NSFontWeightSemibold : NSFontWeightMedium];
+    button.attributedTitle = [[NSAttributedString alloc] initWithString:title ?: @""
+                                                              attributes:@{NSForegroundColorAttributeName: textColor,
+                                                                           NSFontAttributeName: font}];
+    button.contentTintColor = textColor;
+    button.layer.backgroundColor = (selected ? [self settingsSelectedNavigationColor] : NSColor.clearColor).CGColor;
+}
+
+- (void)refreshModernNavigationSelection {
+    for (CSActionButton *button in self.modernNavigationButtons) {
+        [self styleNavigationButton:button selected:(button.tag == self.modernSelectedSection)];
+    }
+}
+
+- (CSActionButton *)modernNavigationButtonWithTitle:(NSString *)title symbol:(NSString *)symbol index:(NSInteger)index {
+    __weak typeof(self) weakSelf = self;
+    CSActionButton *button = [CSActionButton buttonWithTitle:title symbol:symbol handler:^{
+        [weakSelf showModernSection:index];
+    }];
+    button.alignment = NSTextAlignmentLeft;
+    button.bezelStyle = NSBezelStyleRegularSquare;
+    button.bordered = NO;
+    button.wantsLayer = YES;
+    button.layer.cornerRadius = 8;
+    button.tag = index;
+    button.imagePosition = NSImageLeft;
+    button.toolTip = title;
+    [button.heightAnchor constraintEqualToConstant:36].active = YES;
+    [button.widthAnchor constraintEqualToConstant:134].active = YES;
+    [button setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [button setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self styleNavigationButton:button selected:NO];
+    return button;
+}
+
+- (NSStackView *)modernLabeledRowWithTitle:(NSString *)title control:(NSView *)control subtitle:(NSString *)subtitle {
+    return [self settingsRowWithTitle:title control:control subtitle:subtitle];
+}
+
+- (void)buildModernWindow {
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, 500)
                                              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                                                backing:NSBackingStoreBuffered
                                                  defer:NO];
     self.window.title = @"CopyPaste 设置";
+    self.window.minSize = NSMakeSize(660, 460);
     self.window.releasedWhenClosed = NO;
     self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorTransient;
 
+    NSView *content = NSView.new;
+    self.settingsContentBackgroundView = content;
+    content.wantsLayer = YES;
+    self.window.contentView = content;
+
     NSStackView *root = NSStackView.new;
-    root.orientation = NSUserInterfaceLayoutOrientationVertical;
-    root.spacing = 18;
-    root.edgeInsets = NSEdgeInsetsMake(24, 24, 24, 24);
+    root.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    root.spacing = 14;
+    root.edgeInsets = NSEdgeInsetsMake(16, 16, 16, 16);
     root.translatesAutoresizingMaskIntoConstraints = NO;
-    self.window.contentView = NSView.new;
-    [self.window.contentView addSubview:root];
+    [content addSubview:root];
     [NSLayoutConstraint activateConstraints:@[
-        [root.leadingAnchor constraintEqualToAnchor:self.window.contentView.leadingAnchor],
-        [root.trailingAnchor constraintEqualToAnchor:self.window.contentView.trailingAnchor],
-        [root.topAnchor constraintEqualToAnchor:self.window.contentView.topAnchor],
-        [root.bottomAnchor constraintEqualToAnchor:self.window.contentView.bottomAnchor]
+        [root.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [root.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [root.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [root.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]
     ]];
 
-    [root addArrangedSubview:CSLabel(@"CopyPaste 设置", [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], NSColor.labelColor)];
+    NSStackView *sidebar = NSStackView.new;
+    sidebar.orientation = NSUserInterfaceLayoutOrientationVertical;
+    sidebar.spacing = 10;
+    sidebar.alignment = NSLayoutAttributeLeading;
+    sidebar.edgeInsets = NSEdgeInsetsMake(18, 16, 18, 16);
+    sidebar.wantsLayer = YES;
+    sidebar.layer.cornerRadius = 12;
+    self.modernSidebarView = sidebar;
+    [root addArrangedSubview:sidebar];
+    [sidebar.widthAnchor constraintEqualToConstant:166].active = YES;
 
-    [root addArrangedSubview:[self checkboxWithTitle:@"复制选中项目后自动执行粘贴" key:@"autoPaste"]];
-    [root addArrangedSubview:[self checkboxWithTitle:@"双击或回车后自动隐藏页面" key:@"hideAfterSelection"]];
-    [root addArrangedSubview:[self checkboxWithTitle:@"显示右侧内容预览" key:@"showDetailPreview"]];
-    [root addArrangedSubview:[self checkboxWithTitle:@"记录图片内容" key:@"captureImages"]];
-    [root addArrangedSubview:[self checkboxWithTitle:@"在 Dock 中显示图标" key:@"showDock"]];
+    [sidebar addArrangedSubview:CSLabel(@"CopyPaste", [NSFont systemFontOfSize:19 weight:NSFontWeightSemibold], NSColor.labelColor)];
+    NSTextField *subtitle = CSLabel(@"偏好设置", [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
+    subtitle.maximumNumberOfLines = 2;
+    [sidebar addArrangedSubview:subtitle];
 
-    NSStackView *hotKeyRow = NSStackView.new;
-    hotKeyRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    hotKeyRow.spacing = 10;
-    NSTextField *hotKeyLabel = CSLabel(@"唤醒快捷键", [NSFont systemFontOfSize:13], NSColor.labelColor);
-    [hotKeyLabel.widthAnchor constraintEqualToConstant:112].active = YES;
-    [hotKeyRow addArrangedSubview:hotKeyLabel];
+    self.interfaceStyleControl = [NSSegmentedControl segmentedControlWithLabels:@[@"经典", @"现代"]
+                                                                    trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                                          target:self
+                                                                          action:@selector(interfaceStyleChanged:)];
+    self.interfaceStyleControl.segmentStyle = NSSegmentStyleRounded;
+    self.interfaceStyleControl.toolTip = @"切换 CopyPaste 的界面布局";
+    [self.interfaceStyleControl.heightAnchor constraintEqualToConstant:30].active = YES;
+    [self.interfaceStyleControl.widthAnchor constraintEqualToConstant:112].active = YES;
+    [sidebar addArrangedSubview:self.interfaceStyleControl];
+
+    NSBox *divider = NSBox.new;
+    divider.boxType = NSBoxSeparator;
+    [divider.widthAnchor constraintEqualToConstant:134].active = YES;
+    [sidebar addArrangedSubview:divider];
+
+    CSActionButton *generalButton = [self modernNavigationButtonWithTitle:@"通用" symbol:@"gearshape" index:0];
+    CSActionButton *shortcutButton = [self modernNavigationButtonWithTitle:@"快捷键" symbol:@"keyboard" index:1];
+    CSActionButton *appearanceButton = [self modernNavigationButtonWithTitle:@"外观" symbol:@"paintbrush" index:2];
+    CSActionButton *ignoredButton = [self modernNavigationButtonWithTitle:@"忽略应用" symbol:@"nosign" index:3];
+    self.modernNavigationButtons = @[generalButton, shortcutButton, appearanceButton, ignoredButton];
+    for (CSActionButton *button in self.modernNavigationButtons) {
+        [sidebar addArrangedSubview:button];
+    }
+    NSView *sidebarFill = NSView.new;
+    [sidebar addArrangedSubview:sidebarFill];
+
+    NSView *panel = [self modernPanelView];
+    self.modernPanelSurfaceView = panel;
+    [root addArrangedSubview:panel];
+    [panel.widthAnchor constraintGreaterThanOrEqualToConstant:440].active = YES;
+
+    self.modernContentStack = NSStackView.new;
+    self.modernContentStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.modernContentStack.spacing = 18;
+    self.modernContentStack.edgeInsets = NSEdgeInsetsMake(26, 28, 26, 28);
+    self.modernContentStack.alignment = NSLayoutAttributeLeading;
+    self.modernContentStack.translatesAutoresizingMaskIntoConstraints = NO;
+    [panel addSubview:self.modernContentStack];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.modernContentStack.leadingAnchor constraintEqualToAnchor:panel.leadingAnchor],
+        [self.modernContentStack.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor],
+        [self.modernContentStack.topAnchor constraintEqualToAnchor:panel.topAnchor],
+        [self.modernContentStack.bottomAnchor constraintEqualToAnchor:panel.bottomAnchor]
+    ]];
+
+    [self showModernSection:0];
+    [self applySettingsSurfaceColors];
+}
+
+- (void)showModernSection:(NSInteger)section {
+    CSClearStack(self.modernContentStack);
+    __weak typeof(self) weakSelf = self;
+    self.modernSelectedSection = MIN(MAX(section, 0), 3);
+    [self refreshModernNavigationSelection];
+    NSArray<NSString *> *titles = @[@"通用", @"快捷键", @"外观", @"忽略应用"];
+    NSString *title = titles[(NSUInteger)self.modernSelectedSection];
+    NSArray<NSString *> *descriptions = @[
+        @"选择 CopyPaste 日常使用时的默认行为。",
+        @"设置唤醒面板和自动粘贴所需的系统权限。",
+        @"调整界面外观、透明度和面板位置策略。",
+        @"管理历史数量，以及不记录剪贴板的应用。"
+    ];
+    NSStackView *header = NSStackView.new;
+    header.orientation = NSUserInterfaceLayoutOrientationVertical;
+    header.spacing = 4;
+    header.alignment = NSLayoutAttributeLeading;
+    [header addArrangedSubview:[self settingsTitleLabel:title]];
+    [header addArrangedSubview:[self settingsDescriptionLabel:descriptions[(NSUInteger)self.modernSelectedSection]]];
+    [self.modernContentStack addArrangedSubview:header];
+
+    if (self.modernSelectedSection == 0) {
+        NSStackView *checks = [self settingsCheckboxStackWithKeys:@[@"autoPaste", @"hideAfterSelection", @"showDetailPreview", @"captureImages", @"showDock"]
+                                                           titles:@[@"复制后自动粘贴", @"选择后自动隐藏", @"显示内容预览", @"记录图片内容", @"在 Dock 中显示图标"]];
+        [self.modernContentStack addArrangedSubview:[self settingsSectionWithTitle:@"基础选项" description:nil content:checks]];
+    } else if (self.modernSelectedSection == 1) {
+        self.hotKeyRecorder = [[CSHotKeyRecorder alloc] initWithFrame:NSZeroRect];
+        [self.hotKeyRecorder.widthAnchor constraintEqualToConstant:190].active = YES;
+        self.hotKeyRecorder.font = [NSFont systemFontOfSize:14 weight:NSFontWeightMedium];
+        self.hotKeyRecorder.hotKeyChanged = ^(UInt32 keyCode, UInt32 modifiers, NSString *displayName) {
+            [weakSelf.store updatePreferenceKey:@"hotKey" value:CSHotKeyPreference(keyCode, modifiers, displayName)];
+        };
+        self.hotKeyRecorder.recordingChanged = ^(BOOL recording) {
+            if (weakSelf.hotKeyRecordingChanged) {
+                weakSelf.hotKeyRecordingChanged(recording);
+            }
+        };
+        [self.modernContentStack addArrangedSubview:[self modernLabeledRowWithTitle:@"唤醒快捷键" control:self.hotKeyRecorder subtitle:@"录制用于打开 CopyPaste 面板的全局快捷键。"]];
+        self.hotKeyStatusLabel = CSLabel(@"", [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
+        self.hotKeyStatusLabel.maximumNumberOfLines = 2;
+        self.hotKeyStatusRow = [self settingsIndentedRowWithControl:self.hotKeyStatusLabel subtitle:nil];
+        [self.modernContentStack addArrangedSubview:self.hotKeyStatusRow];
+        CSActionButton *accessibilityButton = [CSActionButton buttonWithTitle:@"请求无障碍权限" symbol:@"hand.raised" handler:^{
+            NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
+            AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
+        }];
+        accessibilityButton.toolTip = @"打开系统授权提示；授权后可自动粘贴到目标 App";
+        [self.modernContentStack addArrangedSubview:[self modernLabeledRowWithTitle:@"无障碍权限" control:accessibilityButton subtitle:@"自动粘贴需要此权限；未授权时仍可手动粘贴。"]];
+    } else if (self.modernSelectedSection == 2) {
+        self.appearanceControl = [NSSegmentedControl segmentedControlWithLabels:@[@"浅色", @"深色", @"系统"]
+                                                                    trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                                          target:self
+                                                                          action:@selector(appearanceChanged:)];
+        self.appearanceControl.segmentStyle = NSSegmentStyleRounded;
+        [self.modernContentStack addArrangedSubview:[self modernLabeledRowWithTitle:@"外观" control:self.appearanceControl subtitle:@"选择 CopyPaste 使用浅色、深色或跟随系统。"]];
+
+        NSStackView *transparencyControl = NSStackView.new;
+        transparencyControl.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        transparencyControl.spacing = 10;
+        transparencyControl.alignment = NSLayoutAttributeCenterY;
+        self.transparencySlider = NSSlider.new;
+        self.transparencySlider.minValue = 0;
+        self.transparencySlider.maxValue = 45;
+        self.transparencySlider.continuous = YES;
+        self.transparencySlider.target = self;
+        self.transparencySlider.action = @selector(transparencyChanged:);
+        [self.transparencySlider.widthAnchor constraintEqualToConstant:230].active = YES;
+        [transparencyControl addArrangedSubview:self.transparencySlider];
+        self.transparencyLabel = CSLabel(@"", [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], NSColor.labelColor);
+        [self.transparencyLabel.widthAnchor constraintEqualToConstant:52].active = YES;
+        [transparencyControl addArrangedSubview:self.transparencyLabel];
+        [self.modernContentStack addArrangedSubview:[self modernLabeledRowWithTitle:@"界面透明度" control:transparencyControl subtitle:@"控制面板背景透出背后窗口的程度。"]];
+
+        self.panelSizeModeControl = [NSSegmentedControl segmentedControlWithLabels:@[@"临时拖拽", @"固定保存"]
+                                                                       trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                                             target:self
+                                                                             action:@selector(panelSizeModeChanged:)];
+        self.panelSizeModeControl.segmentStyle = NSSegmentStyleRounded;
+        [self.modernContentStack addArrangedSubview:[self modernLabeledRowWithTitle:@"窗口大小" control:self.panelSizeModeControl subtitle:@"临时拖拽只影响本次；固定保存会长期使用保存尺寸。"]];
+
+        self.panelPositionModePopup = NSPopUpButton.new;
+        [self.panelPositionModePopup addItemsWithTitles:@[@"默认位置", @"固定位置", @"记录上次", @"鼠标附近", @"输入框附近"]];
+        self.panelPositionModePopup.target = self;
+        self.panelPositionModePopup.action = @selector(panelPositionModeChanged:);
+        [self.modernContentStack addArrangedSubview:[self modernLabeledRowWithTitle:@"窗口位置" control:self.panelPositionModePopup subtitle:@"选择面板唤醒时的位置策略。"]];
+
+        NSStackView *actions = NSStackView.new;
+        actions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        actions.spacing = 10;
+        CSActionButton *showPanelButton = [CSActionButton buttonWithTitle:@"显示窗口" symbol:@"macwindow" handler:^{
+            if (weakSelf.panelLayoutPreviewRequested) {
+                weakSelf.panelLayoutPreviewRequested();
+            }
+        }];
+        [actions addArrangedSubview:showPanelButton];
+        CSActionButton *savePanelButton = [CSActionButton buttonWithTitle:@"保存当前窗口" symbol:@"checkmark" handler:^{
+            if (weakSelf.panelLayoutSaveRequested) {
+                weakSelf.panelLayoutSaveRequested();
+            }
+            weakSelf.panelLayoutStatusLabel.stringValue = @"已保存当前窗口大小和位置";
+        }];
+        [actions addArrangedSubview:savePanelButton];
+        [self.modernContentStack addArrangedSubview:[self modernLabeledRowWithTitle:@"布局操作" control:actions subtitle:@"打开面板调整位置和尺寸，再保存为固定布局。"]];
+        self.panelLayoutStatusLabel = CSLabel(@"", [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
+        self.panelLayoutStatusLabel.maximumNumberOfLines = 2;
+        [self.modernContentStack addArrangedSubview:[self settingsIndentedRowWithControl:self.panelLayoutStatusLabel subtitle:nil]];
+    } else {
+        NSStackView *maxRow = NSStackView.new;
+        maxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        maxRow.spacing = 10;
+        maxRow.alignment = NSLayoutAttributeCenterY;
+        self.maxItemsLabel = CSLabel(@"", [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], NSColor.labelColor);
+        [self.maxItemsLabel.widthAnchor constraintEqualToConstant:92].active = YES;
+        [maxRow addArrangedSubview:self.maxItemsLabel];
+        NSStepper *stepper = NSStepper.new;
+        stepper.minValue = 50;
+        stepper.maxValue = 2000;
+        stepper.increment = 50;
+        stepper.integerValue = [self.store.preferences[@"maxItems"] integerValue];
+        stepper.target = self;
+        stepper.action = @selector(maxItemsChanged:);
+        [maxRow addArrangedSubview:stepper];
+        [self.modernContentStack addArrangedSubview:[self modernLabeledRowWithTitle:@"历史数量" control:maxRow subtitle:@"限制本地剪贴板历史保存条数。"]];
+
+        [self.modernContentStack addArrangedSubview:CSLabel(@"忽略的 Bundle ID", [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSColor.labelColor)];
+        NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+        scroll.hasVerticalScroller = YES;
+        self.ignoredTextView = NSTextView.new;
+        self.ignoredTextView.font = [NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightRegular];
+        scroll.documentView = self.ignoredTextView;
+        [scroll.widthAnchor constraintEqualToConstant:430].active = YES;
+        [scroll.heightAnchor constraintEqualToConstant:134].active = YES;
+        [self.modernContentStack addArrangedSubview:scroll];
+
+        CSActionButton *saveIgnoredButton = [CSActionButton buttonWithTitle:@"保存忽略列表" symbol:@"checkmark" handler:^{
+            NSArray *lines = [weakSelf.ignoredTextView.string componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
+            NSMutableArray *ids = NSMutableArray.array;
+            for (NSString *line in lines) {
+                NSString *trimmed = CSTrim(line);
+                if (trimmed.length > 0) [ids addObject:trimmed];
+            }
+            [weakSelf.store updatePreferenceKey:@"ignoredBundleIDs" value:ids];
+        }];
+        [self.modernContentStack addArrangedSubview:saveIgnoredButton];
+    }
+
+    NSView *fill = NSView.new;
+    [fill.heightAnchor constraintGreaterThanOrEqualToConstant:20].active = YES;
+    [self.modernContentStack addArrangedSubview:fill];
+    [self refresh];
+}
+
+- (void)buildWindow {
+    self.currentInterfaceStyle = CSInterfaceStyleFromPreferences(self.store.preferences);
+    if ([self.currentInterfaceStyle isEqualToString:CSInterfaceStyleModern]) {
+        [self buildModernWindow];
+        return;
+    }
+
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 640, 680)
+                                             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                                               backing:NSBackingStoreBuffered
+                                                 defer:NO];
+    self.window.title = @"CopyPaste 设置";
+    self.window.minSize = NSMakeSize(600, 620);
+    self.window.releasedWhenClosed = NO;
+    self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorTransient;
+
+    NSView *content = NSView.new;
+    self.settingsContentBackgroundView = content;
+    content.wantsLayer = YES;
+    self.window.contentView = content;
+    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    scrollView.drawsBackground = NO;
+    scrollView.hasVerticalScroller = YES;
+    scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    [content addSubview:scrollView];
+    [NSLayoutConstraint activateConstraints:@[
+        [scrollView.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [scrollView.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [scrollView.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [scrollView.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]
+    ]];
+
+    CSFlippedView *document = CSFlippedView.new;
+    document.translatesAutoresizingMaskIntoConstraints = NO;
+    scrollView.documentView = document;
+
+    NSStackView *root = NSStackView.new;
+    root.orientation = NSUserInterfaceLayoutOrientationVertical;
+    root.spacing = 13;
+    root.alignment = NSLayoutAttributeLeading;
+    root.edgeInsets = NSEdgeInsetsMake(22, 24, 22, 24);
+    root.translatesAutoresizingMaskIntoConstraints = NO;
+    [document addSubview:root];
+    [NSLayoutConstraint activateConstraints:@[
+        [document.widthAnchor constraintEqualToAnchor:scrollView.contentView.widthAnchor],
+        [document.heightAnchor constraintGreaterThanOrEqualToAnchor:scrollView.contentView.heightAnchor],
+        [root.leadingAnchor constraintEqualToAnchor:document.leadingAnchor],
+        [root.trailingAnchor constraintEqualToAnchor:document.trailingAnchor],
+        [root.topAnchor constraintEqualToAnchor:document.topAnchor],
+        [root.bottomAnchor constraintEqualToAnchor:document.bottomAnchor]
+    ]];
+
+    NSStackView *header = NSStackView.new;
+    header.orientation = NSUserInterfaceLayoutOrientationVertical;
+    header.spacing = 3;
+    header.alignment = NSLayoutAttributeLeading;
+    [header addArrangedSubview:CSLabel(@"CopyPaste 设置", [NSFont systemFontOfSize:20 weight:NSFontWeightSemibold], NSColor.labelColor)];
+    [header addArrangedSubview:CSLabel(@"管理剪贴板记录、面板行为与快捷键", [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor)];
+    [root addArrangedSubview:header];
+
+    self.interfaceStyleControl = [NSSegmentedControl segmentedControlWithLabels:@[@"经典", @"现代"]
+                                                                    trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                                          target:self
+                                                                          action:@selector(interfaceStyleChanged:)];
+    self.interfaceStyleControl.segmentStyle = NSSegmentStyleRounded;
+    self.interfaceStyleControl.toolTip = @"切换 CopyPaste 的界面布局；经典保持当前交互，现代使用新的分栏界面";
+    [root addArrangedSubview:[self settingsRowWithTitle:@"界面风格" control:self.interfaceStyleControl subtitle:@"经典保留当前交互；现代使用新的分栏界面。"]];
+
+    NSBox *generalDivider = [self settingsDivider];
+    [generalDivider.widthAnchor constraintEqualToConstant:592].active = YES;
+    [root addArrangedSubview:generalDivider];
+
+    [root addArrangedSubview:CSLabel(@"通用", [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor)];
+    NSStackView *checks = [self settingsCheckboxStackWithKeys:@[@"autoPaste", @"hideAfterSelection", @"showDetailPreview", @"captureImages", @"showDock"]
+                                                       titles:@[@"复制后自动粘贴", @"选择后自动隐藏", @"显示内容预览", @"记录图片内容", @"在 Dock 中显示图标"]];
+    [root addArrangedSubview:[self settingsRowWithTitle:@"基础选项" control:checks subtitle:nil]];
+
+    NSBox *shortcutDivider = [self settingsDivider];
+    [shortcutDivider.widthAnchor constraintEqualToConstant:592].active = YES;
+    [root addArrangedSubview:shortcutDivider];
+
+    [root addArrangedSubview:CSLabel(@"快捷键", [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor)];
     self.hotKeyRecorder = [[CSHotKeyRecorder alloc] initWithFrame:NSZeroRect];
-    [self.hotKeyRecorder.widthAnchor constraintEqualToConstant:180].active = YES;
+    [self.hotKeyRecorder.widthAnchor constraintEqualToConstant:190].active = YES;
+    self.hotKeyRecorder.font = [NSFont systemFontOfSize:14 weight:NSFontWeightMedium];
     __weak typeof(self) weakSelf = self;
     self.hotKeyRecorder.hotKeyChanged = ^(UInt32 keyCode, UInt32 modifiers, NSString *displayName) {
         [weakSelf.store updatePreferenceKey:@"hotKey" value:CSHotKeyPreference(keyCode, modifiers, displayName)];
@@ -2709,32 +3653,35 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
             weakSelf.hotKeyRecordingChanged(recording);
         }
     };
-    [hotKeyRow addArrangedSubview:self.hotKeyRecorder];
-    [root addArrangedSubview:hotKeyRow];
-    self.hotKeyStatusLabel = CSLabel(@"", [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor);
+    [root addArrangedSubview:[self settingsRowWithTitle:@"唤醒快捷键" control:self.hotKeyRecorder subtitle:@"录制用于打开 CopyPaste 面板的全局快捷键。"]];
+    self.hotKeyStatusLabel = CSLabel(@"", [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
     self.hotKeyStatusLabel.maximumNumberOfLines = 2;
-    [root addArrangedSubview:self.hotKeyStatusLabel];
+    self.hotKeyStatusRow = [self settingsIndentedRowWithControl:self.hotKeyStatusLabel subtitle:nil];
+    [root addArrangedSubview:self.hotKeyStatusRow];
 
-    NSStackView *appearanceRow = NSStackView.new;
-    appearanceRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    appearanceRow.spacing = 10;
-    NSTextField *appearanceLabel = CSLabel(@"外观", [NSFont systemFontOfSize:13], NSColor.labelColor);
-    [appearanceLabel.widthAnchor constraintEqualToConstant:112].active = YES;
-    [appearanceRow addArrangedSubview:appearanceLabel];
+    CSActionButton *accessibilityButton = [CSActionButton buttonWithTitle:@"请求无障碍权限" symbol:@"hand.raised" handler:^{
+        NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
+        AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
+    }];
+    accessibilityButton.toolTip = @"打开系统授权提示；授权后可自动粘贴到目标 App";
+    [root addArrangedSubview:[self settingsRowWithTitle:@"无障碍权限" control:accessibilityButton subtitle:@"自动粘贴需要此权限；未授权时仍可手动粘贴。"]];
+
+    NSBox *appearanceDivider = [self settingsDivider];
+    [appearanceDivider.widthAnchor constraintEqualToConstant:592].active = YES;
+    [root addArrangedSubview:appearanceDivider];
+
+    [root addArrangedSubview:CSLabel(@"外观与布局", [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor)];
     self.appearanceControl = [NSSegmentedControl segmentedControlWithLabels:@[@"浅色", @"深色", @"系统"]
                                                                 trackingMode:NSSegmentSwitchTrackingSelectOne
                                                                       target:self
                                                                       action:@selector(appearanceChanged:)];
     self.appearanceControl.segmentStyle = NSSegmentStyleRounded;
-    [appearanceRow addArrangedSubview:self.appearanceControl];
-    [root addArrangedSubview:appearanceRow];
+    [root addArrangedSubview:[self settingsRowWithTitle:@"外观" control:self.appearanceControl subtitle:nil]];
 
-    NSStackView *transparencyRow = NSStackView.new;
-    transparencyRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    transparencyRow.spacing = 10;
-    self.transparencyLabel = CSLabel(@"", [NSFont systemFontOfSize:13], NSColor.labelColor);
-    [self.transparencyLabel.widthAnchor constraintEqualToConstant:112].active = YES;
-    [transparencyRow addArrangedSubview:self.transparencyLabel];
+    NSStackView *transparencyControl = NSStackView.new;
+    transparencyControl.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    transparencyControl.spacing = 10;
+    transparencyControl.alignment = NSLayoutAttributeCenterY;
     self.transparencySlider = NSSlider.new;
     self.transparencySlider.minValue = 0;
     self.transparencySlider.maxValue = 45;
@@ -2742,37 +3689,27 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.transparencySlider.target = self;
     self.transparencySlider.action = @selector(transparencyChanged:);
     self.transparencySlider.toolTip = @"调整 CopyPaste 面板透出背后窗口的程度";
-    [transparencyRow addArrangedSubview:self.transparencySlider];
-    [root addArrangedSubview:transparencyRow];
+    [self.transparencySlider.widthAnchor constraintEqualToConstant:300].active = YES;
+    [transparencyControl addArrangedSubview:self.transparencySlider];
+    self.transparencyLabel = CSLabel(@"", [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], NSColor.labelColor);
+    [self.transparencyLabel.widthAnchor constraintEqualToConstant:52].active = YES;
+    [transparencyControl addArrangedSubview:self.transparencyLabel];
+    [root addArrangedSubview:[self settingsRowWithTitle:@"界面透明度" control:transparencyControl subtitle:nil]];
 
-    NSStackView *panelSizeRow = NSStackView.new;
-    panelSizeRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    panelSizeRow.spacing = 10;
-    NSTextField *panelSizeLabel = CSLabel(@"窗口大小", [NSFont systemFontOfSize:13], NSColor.labelColor);
-    [panelSizeLabel.widthAnchor constraintEqualToConstant:112].active = YES;
-    [panelSizeRow addArrangedSubview:panelSizeLabel];
     self.panelSizeModeControl = [NSSegmentedControl segmentedControlWithLabels:@[@"临时拖拽", @"固定保存"]
                                                                    trackingMode:NSSegmentSwitchTrackingSelectOne
                                                                          target:self
                                                                          action:@selector(panelSizeModeChanged:)];
     self.panelSizeModeControl.segmentStyle = NSSegmentStyleRounded;
     self.panelSizeModeControl.toolTip = @"临时拖拽只影响本次；固定保存会长期使用保存的窗口大小";
-    [panelSizeRow addArrangedSubview:self.panelSizeModeControl];
-    [root addArrangedSubview:panelSizeRow];
+    [root addArrangedSubview:[self settingsRowWithTitle:@"窗口大小" control:self.panelSizeModeControl subtitle:nil]];
 
-    NSStackView *panelPositionRow = NSStackView.new;
-    panelPositionRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    panelPositionRow.spacing = 10;
-    NSTextField *panelPositionLabel = CSLabel(@"窗口位置", [NSFont systemFontOfSize:13], NSColor.labelColor);
-    [panelPositionLabel.widthAnchor constraintEqualToConstant:112].active = YES;
-    [panelPositionRow addArrangedSubview:panelPositionLabel];
     self.panelPositionModePopup = NSPopUpButton.new;
     [self.panelPositionModePopup addItemsWithTitles:@[@"默认位置", @"固定位置", @"记录上次", @"鼠标附近", @"输入框附近"]];
     self.panelPositionModePopup.target = self;
     self.panelPositionModePopup.action = @selector(panelPositionModeChanged:);
     self.panelPositionModePopup.toolTip = @"选择面板唤醒时出现的位置策略";
-    [panelPositionRow addArrangedSubview:self.panelPositionModePopup];
-    [root addArrangedSubview:panelPositionRow];
+    [root addArrangedSubview:[self settingsRowWithTitle:@"窗口位置" control:self.panelPositionModePopup subtitle:nil]];
 
     NSStackView *panelLayoutActions = NSStackView.new;
     panelLayoutActions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -2792,15 +3729,22 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     }];
     savePanelButton.toolTip = @"保存当前面板大小和位置，用于固定大小或固定位置模式";
     [panelLayoutActions addArrangedSubview:savePanelButton];
-    [root addArrangedSubview:panelLayoutActions];
-    self.panelLayoutStatusLabel = CSLabel(@"", [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor);
+    [root addArrangedSubview:[self settingsRowWithTitle:@"布局操作" control:panelLayoutActions subtitle:nil]];
+    self.panelLayoutStatusLabel = CSLabel(@"", [NSFont systemFontOfSize:12], NSColor.secondaryLabelColor);
     self.panelLayoutStatusLabel.maximumNumberOfLines = 2;
-    [root addArrangedSubview:self.panelLayoutStatusLabel];
+    [root addArrangedSubview:[self settingsIndentedRowWithControl:self.panelLayoutStatusLabel subtitle:nil]];
 
+    NSBox *historyDivider = [self settingsDivider];
+    [historyDivider.widthAnchor constraintEqualToConstant:592].active = YES;
+    [root addArrangedSubview:historyDivider];
+
+    [root addArrangedSubview:CSLabel(@"历史与忽略应用", [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor)];
     NSStackView *maxRow = NSStackView.new;
     maxRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     maxRow.spacing = 10;
-    self.maxItemsLabel = CSLabel(@"", [NSFont systemFontOfSize:13], NSColor.labelColor);
+    maxRow.alignment = NSLayoutAttributeCenterY;
+    self.maxItemsLabel = CSLabel(@"", [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], NSColor.labelColor);
+    [self.maxItemsLabel.widthAnchor constraintEqualToConstant:92].active = YES;
     [maxRow addArrangedSubview:self.maxItemsLabel];
     NSStepper *stepper = NSStepper.new;
     stepper.minValue = 50;
@@ -2810,15 +3754,16 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     stepper.target = self;
     stepper.action = @selector(maxItemsChanged:);
     [maxRow addArrangedSubview:stepper];
-    [root addArrangedSubview:maxRow];
+    [root addArrangedSubview:[self settingsRowWithTitle:@"历史数量" control:maxRow subtitle:nil]];
 
-    [root addArrangedSubview:CSLabel(@"忽略的 Bundle ID", [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], NSColor.labelColor)];
+    [root addArrangedSubview:CSLabel(@"忽略的 Bundle ID", [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSColor.labelColor)];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     scroll.hasVerticalScroller = YES;
     self.ignoredTextView = NSTextView.new;
-    self.ignoredTextView.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
+    self.ignoredTextView.font = [NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightRegular];
     scroll.documentView = self.ignoredTextView;
-    [scroll.heightAnchor constraintEqualToConstant:72].active = YES;
+    [scroll.widthAnchor constraintEqualToConstant:560].active = YES;
+    [scroll.heightAnchor constraintEqualToConstant:78].active = YES;
     [root addArrangedSubview:scroll];
 
     NSStackView *actions = NSStackView.new;
@@ -2835,12 +3780,6 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     }];
     saveIgnoredButton.toolTip = @"保存不记录剪贴板的 App Bundle ID 列表";
     [actions addArrangedSubview:saveIgnoredButton];
-    CSActionButton *accessibilityButton = [CSActionButton buttonWithTitle:@"请求无障碍权限" symbol:@"hand.raised" handler:^{
-        NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
-        AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
-    }];
-    accessibilityButton.toolTip = @"打开系统授权提示；授权后可自动粘贴到目标 App";
-    [actions addArrangedSubview:accessibilityButton];
     [root addArrangedSubview:actions];
 
     [self refresh];
@@ -2850,6 +3789,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     NSButton *button = [NSButton checkboxWithTitle:title target:self action:@selector(checkboxChanged:)];
     button.identifier = key;
     button.state = [self.store.preferences[key] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+    button.font = [NSFont systemFontOfSize:14 weight:NSFontWeightRegular];
     if ([key isEqualToString:@"autoPaste"]) {
         button.toolTip = @"开启后，选择记录会自动切回目标 App 并发送粘贴命令";
     } else if ([key isEqualToString:@"hideAfterSelection"]) {
@@ -2862,6 +3802,11 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         button.toolTip = @"控制 CopyPaste 是否出现在 Dock 和应用切换器中";
     }
     return button;
+}
+
+- (void)interfaceStyleChanged:(NSSegmentedControl *)sender {
+    NSString *style = sender.selectedSegment == 1 ? CSInterfaceStyleModern : CSInterfaceStyleClassic;
+    [self.store updatePreferenceKey:@"interfaceStyle" value:style];
 }
 
 - (void)checkboxChanged:(NSButton *)sender {
@@ -2886,7 +3831,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 - (void)transparencyChanged:(NSSlider *)sender {
     CGFloat transparency = CSClampCGFloat(sender.doubleValue, 0.0, 45.0);
     CGFloat opacity = 1.0 - transparency / 100.0;
-    self.transparencyLabel.stringValue = [NSString stringWithFormat:@"界面透明度 %.0f%%", transparency];
+    self.transparencyLabel.stringValue = [NSString stringWithFormat:@"%.0f%%", transparency];
     [self.store updatePreferenceKey:@"panelOpacity" value:@(opacity)];
 }
 
@@ -2925,11 +3870,28 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 }
 
 - (void)refresh {
-    self.maxItemsLabel.stringValue = [NSString stringWithFormat:@"最多保留 %@ 条历史", self.store.preferences[@"maxItems"]];
+    NSString *style = CSInterfaceStyleFromPreferences(self.store.preferences);
+    if (self.currentInterfaceStyle.length > 0 && ![style isEqualToString:self.currentInterfaceStyle]) {
+        BOOL wasVisible = self.window.visible;
+        [self.window orderOut:nil];
+        self.window = nil;
+        [self buildWindow];
+        if (wasVisible) {
+            [self.window center];
+            [self.window makeKeyAndOrderFront:nil];
+            [self.window orderFrontRegardless];
+        }
+        return;
+    }
+    [self applySettingsSurfaceColors];
+    self.interfaceStyleControl.selectedSegment = [style isEqualToString:CSInterfaceStyleModern] ? 1 : 0;
+    [self refreshModernNavigationSelection];
+    self.maxItemsLabel.stringValue = [NSString stringWithFormat:@"%@ 条", self.store.preferences[@"maxItems"]];
     NSDictionary *hotKey = CSHotKeyFromPreferences(self.store.preferences);
     [self.hotKeyRecorder setHotKeyDisplayValue:hotKey[@"display"]];
     BOOL hasHotKeyNotice = [self.store.lastNotice containsString:@"快捷键"];
     self.hotKeyStatusLabel.hidden = !hasHotKeyNotice;
+    self.hotKeyStatusRow.hidden = !hasHotKeyNotice;
     self.hotKeyStatusLabel.stringValue = hasHotKeyNotice ? self.store.lastNotice : @"";
     NSString *mode = CSAppearanceModeFromPreferences(self.store.preferences);
     if ([mode isEqualToString:CSAppearanceModeLight]) {
@@ -2940,7 +3902,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         self.appearanceControl.selectedSegment = 2;
     }
     CGFloat transparency = CSTransparencyPercentFromPreferences(self.store.preferences);
-    self.transparencyLabel.stringValue = [NSString stringWithFormat:@"界面透明度 %.0f%%", transparency];
+    self.transparencyLabel.stringValue = [NSString stringWithFormat:@"%.0f%%", transparency];
     self.transparencySlider.doubleValue = transparency;
     self.panelSizeModeControl.selectedSegment = [CSPanelSizeModeFromPreferences(self.store.preferences) isEqualToString:CSPanelSizeModeSaved] ? 1 : 0;
     NSString *positionMode = CSPanelPositionModeFromPreferences(self.store.preferences);
