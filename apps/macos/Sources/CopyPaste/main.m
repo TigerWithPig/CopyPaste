@@ -2,6 +2,7 @@
 #import <Carbon/Carbon.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <ImageIO/ImageIO.h>
 
 static NSString * const CSKindText = @"text";
 static NSString * const CSKindLink = @"link";
@@ -173,9 +174,13 @@ static BOOL CSIsLikelyURL(NSString *value) {
 
 static NSString *CSRelativeDate(NSNumber *timestamp) {
     NSDate *date = [NSDate dateWithTimeIntervalSince1970:timestamp.doubleValue];
-    NSRelativeDateTimeFormatter *formatter = NSRelativeDateTimeFormatter.new;
-    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_Hans_CN"];
-    formatter.unitsStyle = NSRelativeDateTimeFormatterUnitsStyleShort;
+    static NSRelativeDateTimeFormatter *formatter;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = NSRelativeDateTimeFormatter.new;
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_Hans_CN"];
+        formatter.unitsStyle = NSRelativeDateTimeFormatterUnitsStyleShort;
+    });
     return [formatter localizedStringForDate:date relativeToDate:NSDate.date];
 }
 
@@ -470,23 +475,39 @@ static NSTextField *CSLabel(NSString *text, NSFont *font, NSColor *color) {
     return label;
 }
 
-static NSData *CSPNGDataFromImage(NSImage *image, CGFloat maxPixelSize) {
-    if (image.size.width <= 0 || image.size.height <= 0) {
+static NSData *CSPNGDataFromImageData(NSData *imageData, CGFloat maxPixelSize) {
+    if (imageData.length == 0) {
+        return nil;
+    }
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)imageData, NULL);
+    if (!source) {
+        return nil;
+    }
+    NSDictionary *options = @{
+        (__bridge NSString *)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (__bridge NSString *)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (__bridge NSString *)kCGImageSourceThumbnailMaxPixelSize: @(maxPixelSize)
+    };
+    CGImageRef thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+    CFRelease(source);
+    if (!thumbnail) {
         return nil;
     }
 
-    CGFloat scale = MIN(1.0, maxPixelSize / MAX(image.size.width, image.size.height));
-    NSSize targetSize = NSMakeSize(image.size.width * scale, image.size.height * scale);
-    NSImage *target = [[NSImage alloc] initWithSize:targetSize];
-    [target lockFocus];
-    [image drawInRect:NSMakeRect(0, 0, targetSize.width, targetSize.height)
-             fromRect:NSZeroRect
-            operation:NSCompositingOperationCopy
-             fraction:1.0];
-    [target unlockFocus];
-
-    NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:target.TIFFRepresentation];
-    return [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    NSMutableData *output = NSMutableData.data;
+    CGImageDestinationRef destination = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)output,
+                                                                         CFSTR("public.png"),
+                                                                         1,
+                                                                         NULL);
+    if (!destination) {
+        CGImageRelease(thumbnail);
+        return nil;
+    }
+    CGImageDestinationAddImage(destination, thumbnail, NULL);
+    BOOL finalized = CGImageDestinationFinalize(destination);
+    CFRelease(destination);
+    CGImageRelease(thumbnail);
+    return finalized ? output.copy : nil;
 }
 
 static void CSClearSubviews(NSView *view) {
@@ -868,6 +889,48 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     NSMutableSet<NSString *> *_transientFingerprints;
     dispatch_queue_t _saveQueue;
     NSUInteger _saveGeneration;
+    NSArray<NSMutableDictionary *> *_filteredItemsCache;
+}
+
+@synthesize items = _items;
+@synthesize query = _query;
+@synthesize filterMode = _filterMode;
+@synthesize filterValue = _filterValue;
+
+- (void)invalidateFilteredItems {
+    _filteredItemsCache = nil;
+}
+
+- (void)setItems:(NSMutableArray<NSMutableDictionary *> *)items {
+    _items = items;
+    [self invalidateFilteredItems];
+}
+
+- (void)setQuery:(NSString *)query {
+    NSString *nextQuery = [query copy] ?: @"";
+    if ([_query isEqualToString:nextQuery]) {
+        return;
+    }
+    _query = nextQuery;
+    [self invalidateFilteredItems];
+}
+
+- (void)setFilterMode:(NSString *)filterMode {
+    NSString *nextMode = [filterMode copy] ?: @"all";
+    if ([_filterMode isEqualToString:nextMode]) {
+        return;
+    }
+    _filterMode = nextMode;
+    [self invalidateFilteredItems];
+}
+
+- (void)setFilterValue:(NSString *)filterValue {
+    NSString *nextValue = [filterValue copy] ?: @"";
+    if ([_filterValue isEqualToString:nextValue]) {
+        return;
+    }
+    _filterValue = nextValue;
+    [self invalidateFilteredItems];
 }
 
 - (instancetype)init {
@@ -961,16 +1024,32 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 }
 
 - (NSDictionary *)librarySnapshot {
-    NSDictionary *library = @{
+    // Copy the mutable containers, but retain immutable strings and data. Image
+    // payloads can be several megabytes, so a property-list deep copy here
+    // would block the main thread on every saved interaction.
+    NSMutableArray<NSDictionary *> *itemSnapshots = [NSMutableArray arrayWithCapacity:self.items.count];
+    for (NSDictionary *item in self.items) {
+        NSMutableDictionary *snapshot = [item mutableCopy];
+        if ([item[@"boardIDs"] isKindOfClass:NSArray.class]) {
+            snapshot[@"boardIDs"] = [item[@"boardIDs"] copy];
+        }
+        if ([item[@"filePaths"] isKindOfClass:NSArray.class]) {
+            snapshot[@"filePaths"] = [item[@"filePaths"] copy];
+        }
+        [itemSnapshots addObject:snapshot.copy];
+    }
+
+    NSMutableArray<NSDictionary *> *boardSnapshots = [NSMutableArray arrayWithCapacity:self.boards.count];
+    for (NSDictionary *board in self.boards) {
+        [boardSnapshots addObject:board.copy];
+    }
+
+    return @{
         @"version": @1,
-        @"items": self.items ?: @[],
-        @"boards": self.boards ?: @[],
-        @"preferences": self.preferences ?: @{}
+        @"items": itemSnapshots.copy,
+        @"boards": boardSnapshots.copy,
+        @"preferences": self.preferences.copy ?: @{}
     };
-    CFPropertyListRef snapshot = CFPropertyListCreateDeepCopy(kCFAllocatorDefault,
-                                                              (__bridge CFPropertyListRef)library,
-                                                              kCFPropertyListImmutable);
-    return CFBridgingRelease(snapshot);
 }
 
 - (void)writeLibrarySnapshot:(NSDictionary *)snapshot {
@@ -1024,6 +1103,9 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 }
 
 - (NSArray<NSMutableDictionary *> *)filteredItems {
+    if (_filteredItemsCache) {
+        return _filteredItemsCache;
+    }
     NSMutableArray<NSMutableDictionary *> *result = NSMutableArray.array;
     NSString *needle = CSTrim(self.query).lowercaseString;
 
@@ -1063,7 +1145,8 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         return NSOrderedSame;
     }];
 
-    return result;
+    _filteredItemsCache = result.copy;
+    return _filteredItemsCache;
 }
 
 - (NSMutableDictionary *)selectedItem {
@@ -1196,6 +1279,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 
 - (void)togglePin:(NSMutableDictionary *)item {
     item[@"pinned"] = @(![item[@"pinned"] boolValue]);
+    [self invalidateFilteredItems];
     [self notifyChanged];
 }
 
@@ -1208,6 +1292,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         [boardIDs addObject:boardID];
     }
     item[@"boardIDs"] = boardIDs;
+    [self invalidateFilteredItems];
     [self notifyChanged];
 }
 
@@ -1273,6 +1358,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         self.items = [[self.items filteredArrayUsingPredicate:predicate] mutableCopy];
     } else {
         [self.items removeAllObjects];
+        [self invalidateFilteredItems];
     }
     self.selectedItemID = self.items.firstObject[@"id"];
     [self.selectedItemIDs removeAllObjects];
@@ -1390,6 +1476,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     [self writeItemToPasteboard:item asPlainText:plainText];
     item[@"pasteCount"] = @([item[@"pasteCount"] integerValue] + 1);
     item[@"date"] = @(NSDate.date.timeIntervalSince1970);
+    [self invalidateFilteredItems];
     self.lastNotice = @"已放回剪贴板";
     [self notifyChanged];
 }
@@ -1432,6 +1519,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 @implementation CSClipboardMonitor {
     NSTimer *_timer;
     NSInteger _lastChangeCount;
+    dispatch_queue_t _captureQueue;
 }
 
 - (instancetype)initWithStore:(CSStore *)store {
@@ -1439,6 +1527,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     if (!self) return nil;
     _store = store;
     _lastChangeCount = NSPasteboard.generalPasteboard.changeCount;
+    _captureQueue = dispatch_queue_create("io.github.TigerWithPig.CopyPaste.clipboardCapture", DISPATCH_QUEUE_SERIAL);
     return self;
 }
 
@@ -1465,36 +1554,59 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
         return;
     }
 
-    NSMutableDictionary *item = [self clipItemFromPasteboard:pasteboard sourceApp:frontApp];
-    if (item) {
-        [self.store addCapturedItem:item];
-    }
-}
-
-- (NSMutableDictionary *)clipItemFromPasteboard:(NSPasteboard *)pasteboard sourceApp:(NSRunningApplication *)sourceApp {
     NSArray<NSURL *> *urls = [pasteboard readObjectsForClasses:@[NSURL.class] options:nil];
     BOOL allFileURLs = urls.count > 0;
     for (NSURL *url in urls) {
         allFileURLs = allFileURLs && url.isFileURL;
     }
     if (allFileURLs) {
-        return [self fileItemFromURLs:urls sourceApp:sourceApp];
+        [self.store addCapturedItem:[self fileItemFromURLs:urls sourceApp:frontApp]];
+        return;
     }
 
-    if ([self.store.preferences[@"captureImages"] boolValue]) {
-        NSImage *image = [[NSImage alloc] initWithPasteboard:pasteboard];
-        NSData *pngData = image ? CSPNGDataFromImage(image, 640) : nil;
-        if (pngData.length > 0) {
+    if ([self.store.preferences[@"captureImages"] boolValue] && [self captureImageFromPasteboard:pasteboard sourceApp:frontApp]) {
+        return;
+    }
+
+    NSMutableDictionary *item = [self textItemFromPasteboard:pasteboard sourceApp:frontApp];
+    if (item) {
+        [self.store addCapturedItem:item];
+    }
+}
+
+- (BOOL)captureImageFromPasteboard:(NSPasteboard *)pasteboard sourceApp:(NSRunningApplication *)sourceApp {
+    NSPasteboardType imageType = [pasteboard availableTypeFromArray:@[NSPasteboardTypePNG, NSPasteboardTypeTIFF]];
+    NSData *imageData = imageType ? [pasteboard dataForType:imageType] : nil;
+    if (imageData.length == 0) {
+        return NO;
+    }
+
+    NSImage *sourceImage = [[NSImage alloc] initWithData:imageData];
+    NSSize imageSize = sourceImage.size;
+    if (!sourceImage || imageSize.width <= 0 || imageSize.height <= 0) {
+        return NO;
+    }
+    NSString *sourceAppName = [sourceApp.localizedName copy] ?: @"";
+    NSString *sourceBundleID = [sourceApp.bundleIdentifier copy] ?: @"";
+    NSTimeInterval captureDate = NSDate.date.timeIntervalSince1970;
+    // The pasteboard snapshot is taken on the main thread, but scaling,
+    // encoding and hashing run serially so they cannot delay input events.
+    dispatch_async(_captureQueue, ^{
+        @autoreleasepool {
+            NSData *pngData = CSPNGDataFromImageData(imageData, 640);
+            if (pngData.length == 0) {
+                return;
+            }
             NSString *base64 = [pngData base64EncodedStringWithOptions:0];
-            NSString *dimensions = [NSString stringWithFormat:@"%ld x %ld", (long)image.size.width, (long)image.size.height];
-            return @{
+            NSString *dimensions = [NSString stringWithFormat:@"%ld x %ld", (long)imageSize.width, (long)imageSize.height];
+            NSMutableDictionary *item = @{
                 @"id": CSUUID(),
                 @"kind": CSKindImage,
                 @"title": [@"图片 " stringByAppendingString:dimensions],
                 @"body": dimensions,
-                @"date": @(NSDate.date.timeIntervalSince1970),
-                @"sourceAppName": sourceApp.localizedName ?: @"",
-                @"sourceBundleID": sourceApp.bundleIdentifier ?: @"",
+                @"date": @(captureDate),
+                @"sourceAppName": sourceAppName,
+                @"sourceBundleID": sourceBundleID,
                 @"pinned": @NO,
                 @"boardIDs": NSMutableArray.array,
                 @"pasteCount": @0,
@@ -1502,9 +1614,15 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
                 @"filePaths": @[],
                 @"fingerprint": CSSHA256([@"image:" stringByAppendingString:base64])
             }.mutableCopy;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.store addCapturedItem:item];
+            });
         }
-    }
+    });
+    return YES;
+}
 
+- (NSMutableDictionary *)textItemFromPasteboard:(NSPasteboard *)pasteboard sourceApp:(NSRunningApplication *)sourceApp {
     NSString *string = [pasteboard stringForType:NSPasteboardTypeString];
     NSString *trimmed = CSTrim(string);
     if (trimmed.length == 0) {
@@ -1570,9 +1688,13 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 @property (nonatomic, strong) CSActionButton *windowPinButton;
 @property (nonatomic, strong) NSPopover *shortcutsPopover;
 @property (nonatomic, strong) NSRunningApplication *lastTargetApplication;
+@property (nonatomic, strong) NSArray<NSMutableDictionary *> *cardItems;
+@property (nonatomic, strong) NSCache<NSString *, NSImage *> *imageCache;
 @property (nonatomic, copy) NSString *currentInterfaceStyle;
 @property (nonatomic, assign) BOOL windowPinned;
 @property (nonatomic, assign) BOOL suppressNextDeactivateClose;
+@property (nonatomic, assign) NSRange renderedCardRange;
+@property (nonatomic, assign) NSUInteger cardLayoutGeneration;
 - (instancetype)initWithStore:(CSStore *)store;
 - (void)toggle;
 - (void)show;
@@ -1593,6 +1715,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 - (void)updateCardSelectionStyles;
 - (void)showShortcutsHelpFromView:(NSView *)view;
 - (void)pasteItems:(NSArray<NSMutableDictionary *> *)items plainText:(BOOL)plainText;
+- (void)renderVisibleCards;
 @end
 
 @implementation CSPanelController
@@ -1601,11 +1724,25 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self = [super init];
     if (!self) return nil;
     _store = store;
+    _imageCache = NSCache.new;
+    _imageCache.countLimit = 96;
+    _imageCache.totalCostLimit = 64 * 1024 * 1024;
+    _renderedCardRange = NSMakeRange(NSNotFound, 0);
     [self buildPanel];
     return self;
 }
 
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
 - (void)buildPanel {
+    if (self.cardScrollView) {
+        [NSNotificationCenter.defaultCenter removeObserver:self
+                                                      name:NSViewBoundsDidChangeNotification
+                                                    object:self.cardScrollView.contentView];
+    }
+    self.renderedCardRange = NSMakeRange(NSNotFound, 0);
     self.currentInterfaceStyle = CSInterfaceStyleFromPreferences(self.store.preferences);
     BOOL modern = [self.currentInterfaceStyle isEqualToString:CSInterfaceStyleModern];
     self.panel = [[CSFloatingPanel alloc] initWithContentRect:modern ? NSMakeRect(0, 0, 1180, 640) : NSMakeRect(0, 0, 1080, 500)
@@ -1652,6 +1789,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 
     if (modern) {
         [self buildModernPanelContent];
+        [self observeCardScrolling];
         [self reloadAll];
         return;
     }
@@ -1713,6 +1851,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self.cardScrollView.drawsBackground = NO;
     self.cardsDocumentView = [[CSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 290)];
     self.cardScrollView.documentView = self.cardsDocumentView;
+    [self observeCardScrolling];
     [body addArrangedSubview:self.cardScrollView];
 
     NSBox *rightDivider = NSBox.new;
@@ -1729,6 +1868,18 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     [self.detailStack setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     [self reloadAll];
+}
+
+- (void)observeCardScrolling {
+    self.cardScrollView.contentView.postsBoundsChangedNotifications = YES;
+    [NSNotificationCenter.defaultCenter addObserver:self
+                                           selector:@selector(cardScrollBoundsDidChange:)
+                                               name:NSViewBoundsDidChangeNotification
+                                             object:self.cardScrollView.contentView];
+}
+
+- (void)cardScrollBoundsDidChange:(NSNotification *)notification {
+    [self renderVisibleCards];
 }
 
 - (BOOL)isModernInterface {
@@ -2355,7 +2506,12 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 
 - (void)windowDidResize:(NSNotification *)notification {
     if (notification.object == self.panel) {
-        [self reloadCards];
+        NSUInteger generation = ++self.cardLayoutGeneration;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.03 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (generation == self.cardLayoutGeneration) {
+                [self reloadCards];
+            }
+        });
     }
 }
 
@@ -2394,58 +2550,8 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     if (!self.panel.visible || deletedItemIDs.count == 0) {
         return;
     }
-    if ([self isModernInterface]) {
-        [self reloadAll];
-        return;
-    }
-
     [self reloadSidebar];
-
-    NSMutableDictionary<NSString *, CSCardView *> *cardsByID = NSMutableDictionary.dictionary;
-    for (NSView *subview in self.cardsDocumentView.subviews.copy) {
-        if (![subview isKindOfClass:CSCardView.class]) {
-            [subview removeFromSuperview];
-            continue;
-        }
-        CSCardView *card = (CSCardView *)subview;
-        if ([deletedItemIDs containsObject:card.itemID]) {
-            [card removeFromSuperview];
-        } else if (card.itemID.length > 0) {
-            cardsByID[card.itemID] = card;
-        }
-    }
-
-    NSArray<NSMutableDictionary *> *items = self.store.filteredItems;
-    CGFloat x = 16;
-    CGFloat y = 14;
-    CGFloat width = 190;
-    CGFloat height = MIN(MAX(self.cardScrollView.contentSize.height - 36, 246), 310);
-    BOOL needsFullReload = NO;
-    for (NSMutableDictionary *item in items) {
-        CSCardView *card = cardsByID[item[@"id"]];
-        if (!card) {
-            needsFullReload = YES;
-            break;
-        }
-        card.frame = NSMakeRect(x, y, width, height);
-        x += width + 12;
-    }
-
-    if (needsFullReload) {
-        [self reloadCards];
-    } else {
-        CGFloat documentWidth = MAX(self.cardScrollView.contentSize.width, x + 16);
-        CGFloat documentHeight = MAX(self.cardScrollView.contentSize.height, height + 28);
-        self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, documentHeight);
-        if (items.count == 0) {
-            NSTextField *empty = CSLabel(@"复制一些内容后会出现在这里", [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor);
-            empty.alignment = NSTextAlignmentCenter;
-            empty.frame = NSMakeRect(20, MAX(24, documentHeight / 2.0 - 15), MAX(320, self.cardScrollView.contentSize.width - 40), 30);
-            [self.cardsDocumentView addSubview:empty];
-        }
-    }
-
-    [self updateCardSelectionStyles];
+    [self reloadCards];
     [self reloadDetail];
 }
 
@@ -2555,50 +2661,86 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 }
 
 - (void)reloadCards {
-    CSClearSubviews(self.cardsDocumentView);
-    NSArray<NSMutableDictionary *> *items = self.store.filteredItems;
+    self.cardItems = self.store.filteredItems;
+    self.renderedCardRange = NSMakeRange(NSNotFound, 0);
     if ([self isModernInterface]) {
         CGFloat width = MAX(self.cardScrollView.contentSize.width - 16, 420);
         CGFloat cardHeight = 84;
         CGFloat spacing = 10;
-        CGFloat y = 12;
-        for (NSMutableDictionary *item in items) {
-            CSCardView *card = [self modernCardViewForItem:item frame:NSMakeRect(8, y, width, cardHeight)];
-            [self.cardsDocumentView addSubview:card];
-            y += cardHeight + spacing;
-        }
-
-        CGFloat documentHeight = MAX(self.cardScrollView.contentSize.height, y + 12);
+        CGFloat documentHeight = MAX(self.cardScrollView.contentSize.height,
+                                     24 + (CGFloat)self.cardItems.count * (cardHeight + spacing));
         self.cardsDocumentView.frame = NSMakeRect(0, 0, MAX(self.cardScrollView.contentSize.width, width + 16), documentHeight);
+    } else {
+        CGFloat cardWidth = 190;
+        CGFloat spacing = 12;
+        CGFloat height = MIN(MAX(self.cardScrollView.contentSize.height - 36, 246), 310);
+        CGFloat documentWidth = MAX(self.cardScrollView.contentSize.width,
+                                    32 + (CGFloat)self.cardItems.count * (cardWidth + spacing));
+        CGFloat documentHeight = MAX(self.cardScrollView.contentSize.height, height + 28);
+        self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, documentHeight);
+    }
+    [self renderVisibleCards];
+}
 
-        if (items.count == 0) {
-            NSTextField *empty = CSLabel(@"复制一些内容后会出现在这里", [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor);
-            empty.alignment = NSTextAlignmentCenter;
-            empty.frame = NSMakeRect(16, 120, MAX(320, width - 32), 30);
-            [self.cardsDocumentView addSubview:empty];
+- (void)renderVisibleCards {
+    NSArray<NSMutableDictionary *> *items = self.cardItems ?: @[];
+    if (items.count == 0) {
+        if (self.renderedCardRange.location == 0 && self.renderedCardRange.length == 0) {
+            return;
         }
+        CSClearSubviews(self.cardsDocumentView);
+        self.renderedCardRange = NSMakeRange(0, 0);
+        NSTextField *empty = CSLabel(@"复制一些内容后会出现在这里", [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor);
+        empty.alignment = NSTextAlignmentCenter;
+        if ([self isModernInterface]) {
+            empty.frame = NSMakeRect(16, 120, MAX(320, self.cardsDocumentView.bounds.size.width - 32), 30);
+        } else {
+            empty.frame = NSMakeRect(20, MAX(24, self.cardsDocumentView.bounds.size.height / 2.0 - 15),
+                                     MAX(320, self.cardScrollView.contentSize.width - 40), 30);
+        }
+        [self.cardsDocumentView addSubview:empty];
         return;
     }
 
-    CGFloat x = 16;
-    CGFloat y = 14;
-    CGFloat width = 190;
-    CGFloat height = MIN(MAX(self.cardScrollView.contentSize.height - 36, 246), 310);
-    for (NSMutableDictionary *item in items) {
-        CSCardView *card = [self cardViewForItem:item frame:NSMakeRect(x, y, width, height)];
-        [self.cardsDocumentView addSubview:card];
-        x += width + 12;
+    NSRect visible = self.cardScrollView.documentVisibleRect;
+    NSUInteger firstIndex = 0;
+    NSUInteger lastIndex = 0;
+    if ([self isModernInterface]) {
+        CGFloat stride = 94.0;
+        firstIndex = (NSUInteger)MAX(floor((NSMinY(visible) - 12.0) / stride), 0);
+        lastIndex = (NSUInteger)MAX(ceil((NSMaxY(visible) - 12.0) / stride), 0);
+    } else {
+        CGFloat stride = 202.0;
+        firstIndex = (NSUInteger)MAX(floor((NSMinX(visible) - 16.0) / stride), 0);
+        lastIndex = (NSUInteger)MAX(ceil((NSMaxX(visible) - 16.0) / stride), 0);
+    }
+    NSUInteger buffer = [self isModernInterface] ? 4 : 3;
+    firstIndex = firstIndex > buffer ? firstIndex - buffer : 0;
+    lastIndex = MIN(lastIndex + buffer, items.count - 1);
+    if (firstIndex >= items.count) {
+        firstIndex = items.count - 1;
+    }
+    NSRange desiredRange = NSMakeRange(firstIndex, lastIndex - firstIndex + 1);
+    if (NSEqualRanges(desiredRange, self.renderedCardRange)) {
+        return;
     }
 
-    CGFloat documentWidth = MAX(self.cardScrollView.contentSize.width, x + 16);
-    CGFloat documentHeight = MAX(self.cardScrollView.contentSize.height, height + 28);
-    self.cardsDocumentView.frame = NSMakeRect(0, 0, documentWidth, documentHeight);
-
-    if (items.count == 0) {
-        NSTextField *empty = CSLabel(@"复制一些内容后会出现在这里", [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor);
-        empty.alignment = NSTextAlignmentCenter;
-        empty.frame = NSMakeRect(20, MAX(24, documentHeight / 2.0 - 15), MAX(320, self.cardScrollView.contentSize.width - 40), 30);
-        [self.cardsDocumentView addSubview:empty];
+    CSClearSubviews(self.cardsDocumentView);
+    self.renderedCardRange = desiredRange;
+    if ([self isModernInterface]) {
+        CGFloat width = MAX(self.cardScrollView.contentSize.width - 16, 420);
+        for (NSUInteger index = desiredRange.location; index < NSMaxRange(desiredRange); index++) {
+            CGFloat y = 12.0 + (CGFloat)index * 94.0;
+            CSCardView *card = [self modernCardViewForItem:items[index] frame:NSMakeRect(8, y, width, 84)];
+            [self.cardsDocumentView addSubview:card];
+        }
+    } else {
+        CGFloat height = MIN(MAX(self.cardScrollView.contentSize.height - 36, 246), 310);
+        for (NSUInteger index = desiredRange.location; index < NSMaxRange(desiredRange); index++) {
+            CGFloat x = 16.0 + (CGFloat)index * 202.0;
+            CSCardView *card = [self cardViewForItem:items[index] frame:NSMakeRect(x, 14, 190, height)];
+            [self.cardsDocumentView addSubview:card];
+        }
     }
 }
 
@@ -2766,12 +2908,30 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     card.layer.backgroundColor = (selected ? [NSColor.controlAccentColor colorWithAlphaComponent:selectedAlpha] : [self adjustedControlBackgroundColorWithAlpha:baseAlpha]).CGColor;
 }
 
+- (NSImage *)cachedImageForItem:(NSDictionary *)item {
+    NSString *cacheKey = item[@"fingerprint"] ?: item[@"id"];
+    if (cacheKey.length == 0) {
+        return nil;
+    }
+    NSImage *cachedImage = [self.imageCache objectForKey:cacheKey];
+    if (cachedImage) {
+        return cachedImage;
+    }
+
+    NSData *data = [[NSData alloc] initWithBase64EncodedString:item[@"imageBase64"] ?: @"" options:0];
+    NSImage *image = data.length > 0 ? [[NSImage alloc] initWithData:data] : nil;
+    if (image) {
+        NSUInteger decodedCost = (NSUInteger)MAX(image.size.width, 1) * (NSUInteger)MAX(image.size.height, 1) * 4;
+        [self.imageCache setObject:image forKey:cacheKey cost:MAX(data.length, decodedCost)];
+    }
+    return image;
+}
+
 - (NSView *)previewViewForItem:(NSDictionary *)item frame:(NSRect)frame compact:(BOOL)compact {
     NSString *kind = item[@"kind"];
     if ([kind isEqualToString:CSKindImage]) {
-        NSData *data = [[NSData alloc] initWithBase64EncodedString:item[@"imageBase64"] ?: @"" options:0];
         NSImageView *imageView = [[NSImageView alloc] initWithFrame:frame];
-        imageView.image = [[NSImage alloc] initWithData:data];
+        imageView.image = [self cachedImageForItem:item];
         imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
         imageView.wantsLayer = YES;
         imageView.layer.backgroundColor = [self adjustedControlBackgroundColorWithAlpha:0.8].CGColor;
@@ -2826,8 +2986,7 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
 
     NSString *kind = item[@"kind"];
     if ([kind isEqualToString:CSKindImage]) {
-        NSData *data = [[NSData alloc] initWithBase64EncodedString:item[@"imageBase64"] ?: @"" options:0];
-        NSImage *image = [[NSImage alloc] initWithData:data];
+        NSImage *image = [self cachedImageForItem:item];
         if (image) {
             CGFloat documentWidth = MIN(MAX(image.size.width, viewportWidth), 4096.0);
             CGFloat documentHeight = MIN(MAX(image.size.height, viewportHeight), 4096.0);
@@ -3160,7 +3319,6 @@ static CGEventRef CSHotKeyRecorderEventTapCallback(CGEventTapProxy proxy, CGEven
     self = [super init];
     if (!self) return nil;
     _store = store;
-    [self buildWindow];
     return self;
 }
 
@@ -3972,12 +4130,18 @@ static OSStatus CSHotKeyHandler(EventHandlerCallRef nextHandler, EventRef event,
     self.store.didChange = ^{
         [weakSelf applyAppearancePreference];
         [weakSelf configureActivationPolicy];
-        [weakSelf.panelController reloadAll];
-        [weakSelf.settingsController refresh];
+        if (weakSelf.panelController.panel.visible) {
+            [weakSelf.panelController reloadAll];
+        }
+        if (weakSelf.settingsController.window.visible) {
+            [weakSelf.settingsController refresh];
+        }
     };
     self.store.didDeleteItems = ^(NSSet<NSString *> *deletedItemIDs) {
         [weakSelf.panelController handleDeletedItemsWithIDs:deletedItemIDs];
-        [weakSelf.settingsController refresh];
+        if (weakSelf.settingsController.window.visible) {
+            [weakSelf.settingsController refresh];
+        }
     };
     self.store.didChangeAppearance = ^(NSString *key) {
         [weakSelf applyAppearancePreference];
@@ -3986,12 +4150,16 @@ static OSStatus CSHotKeyHandler(EventHandlerCallRef nextHandler, EventRef event,
         } else {
             [weakSelf.panelController refreshInterfaceAppearance];
         }
-        [weakSelf.settingsController refresh];
+        if (weakSelf.settingsController.window.visible) {
+            [weakSelf.settingsController refresh];
+        }
     };
     self.store.didChangeHotKey = ^{
         [weakSelf registerHotKey];
         [weakSelf updateStatusItemTooltip];
-        [weakSelf.settingsController refresh];
+        if (weakSelf.settingsController.window.visible) {
+            [weakSelf.settingsController refresh];
+        }
     };
     self.settingsController.hotKeyRecordingChanged = ^(BOOL recording) {
         if (recording) {

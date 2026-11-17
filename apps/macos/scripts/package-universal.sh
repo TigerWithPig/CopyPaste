@@ -35,7 +35,8 @@ clang -ObjC -fobjc-arc -fblocks \
     -o "$UNIVERSAL_PRODUCT" \
     -framework Cocoa \
     -framework Carbon \
-    -framework ApplicationServices
+    -framework ApplicationServices \
+    -framework ImageIO
 
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$UNIVERSAL_PRODUCT" "$MACOS_DIR/$APP_NAME"
