@@ -19,11 +19,11 @@ fi
 
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
-cp -R "$APP_DIR" "$STAGING_DIR/$APP_NAME.app"
+ditto --norsrc "$APP_DIR" "$STAGING_DIR/$APP_NAME.app"
 ln -s /Applications "$STAGING_DIR/Applications"
 
-cat > "$STAGING_DIR/Trial Instructions.txt" <<EOF
-CopyPaste trial build
+cat > "$STAGING_DIR/Install Instructions.txt" <<EOF
+CopyPaste
 
 Install:
 1. Drag CopyPaste.app to Applications.
@@ -31,9 +31,13 @@ Install:
 3. Grant Accessibility permission when prompted if you want auto paste.
 
 Note:
-This trial build is ad-hoc signed. macOS Gatekeeper may show an
+This build is ad-hoc signed. macOS Gatekeeper may show an
 "unidentified developer" warning on first launch.
 EOF
+
+if command -v xattr >/dev/null 2>&1; then
+    xattr -cr "$STAGING_DIR" || true
+fi
 
 hdiutil create \
     -volname "$APP_NAME" \
